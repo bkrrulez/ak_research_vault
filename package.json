@@ -7,7 +7,6 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.js",
     "clean": "rimraf dist",
     "lint": "tsc --noEmit"
   },
@@ -35,7 +34,6 @@
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.105.1",
-    "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "axios": "^1.15.2",
     "bcrypt": "^6.0.0",
@@ -61,21 +59,23 @@
     "rss-parser": "^3.13.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7",
-    "vite": "^6.2.3"
+    "vite": "^6.4.2"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/d3": "^7.4.3",
     "@types/express": "^4.17.21",
-    "@types/node": "^18.19.0",
+    "@types/node": "^20.11.30",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.21",
-    "tailwindcss": "^4.1.14",
+    "postcss": "^8.4.38",
+    "rimraf": "^5.0.5",
+    "tailwindcss": "^3.4.4",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
