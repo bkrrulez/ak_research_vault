@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
-    "start": "tsx server.ts",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "start": "node server.js",
+    "clean": "rimraf dist",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -36,8 +36,6 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.105.1",
     "@tailwindcss/vite": "^4.1.14",
-    "@types/bcrypt": "^6.0.0",
-    "@types/d3": "^7.4.3",
     "@vitejs/plugin-react": "^5.0.4",
     "axios": "^1.15.2",
     "bcrypt": "^6.0.0",
@@ -47,16 +45,16 @@
     "cmdk": "^1.1.1",
     "cors": "^2.8.6",
     "d3": "^7.9.0",
-    "date-fns": "^4.1.0",
+    "date-fns": "^3.6.0",
     "dotenv": "^17.2.3",
     "embla-carousel-react": "^8.6.0",
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "openai": "^6.35.0",
-    "react": "^19.0.1",
+    "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
-    "react-dom": "^19.0.1",
+    "react-dom": "^18.3.1",
     "react-hook-form": "^7.75.0",
     "react-router-dom": "^7.14.2",
     "recharts": "^3.8.1",
@@ -66,14 +64,18 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/d3": "^7.4.3",
     "@types/express": "^4.17.21",
-    "@types/node": "^22.14.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
+    "@types/node": "^18.19.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "typescript": "~5.8.2"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
