@@ -1,0 +1,6 @@
+{
+  "name": "AK Research Vault",
+  "description": "A smart research platform for aggregating news, organizing projects, and visualizing knowledge relationships.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI-powered research", "Network graph visualization", "News aggregation"]
+}
