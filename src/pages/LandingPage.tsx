@@ -137,7 +137,7 @@ CREATE TABLE vault_users (
                     variant={sortBy === 'date_desc' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setSortBy("date_desc")}
-                    className={sortBy === 'date_desc' ? 'bg-indigo-600 text-white' : 'text-slate-400'}
+                    className={sortBy === 'date_desc' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-400'}
                   >
                     <CalendarIcon className="w-3.5 h-3.5 mr-1" />
                     <SortDesc className="w-3 h-3" />
@@ -154,7 +154,7 @@ CREATE TABLE vault_users (
                     variant={sortBy === 'date_asc' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setSortBy("date_asc")}
-                    className={sortBy === 'date_asc' ? 'bg-indigo-600 text-white' : 'text-slate-400'}
+                    className={sortBy === 'date_asc' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-400'}
                   >
                     <CalendarIcon className="w-3.5 h-3.5 mr-1" />
                     <SortAsc className="w-3 h-3" />
@@ -173,7 +173,7 @@ CREATE TABLE vault_users (
                     variant={sortBy === 'alpha_asc' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setSortBy("alpha_asc")}
-                    className={sortBy === 'alpha_asc' ? 'bg-indigo-600 text-white' : 'text-slate-400'}
+                    className={sortBy === 'alpha_asc' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-400'}
                   >
                     <Type className="w-3.5 h-3.5 mr-1" />
                     <SortAsc className="w-3 h-3" />
@@ -190,7 +190,7 @@ CREATE TABLE vault_users (
                     variant={sortBy === 'alpha_desc' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setSortBy("alpha_desc")}
-                    className={sortBy === 'alpha_desc' ? 'bg-indigo-600 text-white' : 'text-slate-400'}
+                    className={sortBy === 'alpha_desc' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-400'}
                   >
                     <Type className="w-3.5 h-3.5 mr-1" />
                     <SortDesc className="w-3 h-3" />
@@ -228,19 +228,19 @@ CREATE TABLE vault_users (
                 transition={{ delay: idx * 0.05 }}
               >
                 <Link to={`/project/${project.id}`}>
-                  <Card className="group h-full border-slate-200 hover:border-indigo-500/50 hover:shadow-xl transition-all relative overflow-hidden bg-white">
-                    <div className="absolute top-0 right-0 w-20 h-20 bg-slate-50 rounded-full translate-x-10 -translate-y-10 group-hover:bg-indigo-50 transition-colors" />
+                  <Card className="group h-full border-slate-200 hover:border-primary/50 hover:shadow-xl transition-all relative overflow-hidden bg-white">
+                    <div className="absolute top-0 right-0 w-20 h-20 bg-slate-50 rounded-full translate-x-10 -translate-y-10 group-hover:bg-primary/5 transition-colors" />
                     
                     <CardHeader className="p-4 relative z-10">
                       <div className="flex items-center gap-2 mb-2">
-                        <div className="p-1.5 bg-slate-100 rounded-lg group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm">
+                        <div className="p-1.5 bg-slate-100 rounded-lg group-hover:bg-primary group-hover:text-white transition-all shadow-sm">
                           <Folder className="w-4 h-4" />
                         </div>
                         <div className="flex flex-col">
-                          <Badge variant="outline" className="w-fit h-4 text-[8px] font-black uppercase tracking-widest text-slate-400 group-hover:text-indigo-600 transition-colors border-none p-0">
+                          <Badge variant="outline" className="w-fit h-4 text-[8px] font-black uppercase tracking-widest text-slate-400 group-hover:text-primary transition-colors border-none p-0">
                             Captured {new Date(project.created_at).toLocaleDateString()}
                           </Badge>
-                          <CardTitle className="text-sm font-bold text-slate-800 truncate group-hover:text-indigo-700 transition-colors">{project.name}</CardTitle>
+                          <CardTitle className="text-sm font-bold text-slate-800 truncate group-hover:text-primary transition-colors">{project.name}</CardTitle>
                         </div>
                       </div>
                       <CardDescription className="line-clamp-2 leading-tight text-slate-500 text-[11px] min-h-[1.5rem]">
@@ -250,10 +250,10 @@ CREATE TABLE vault_users (
 
                     <CardFooter className="p-4 pt-0 mt-auto border-t border-slate-50 relative z-10 flex items-center justify-between">
                       <div className="flex items-center gap-2 text-[9px] font-mono font-bold text-slate-400">
-                        <Clock className="w-3 h-3 text-indigo-400/60" /> 
+                        <Clock className="w-3 h-3 text-primary/60" /> 
                         {new Date(project.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
-                      <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all" />
+                      <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-primary group-hover:translate-x-1 transition-all" />
                     </CardFooter>
                   </Card>
                 </Link>

@@ -43,28 +43,35 @@ async function handleResponse(response: Response, context: string) {
     window.location.href = "/login";
     throw new Error("Session expired. Please log in again.");
   }
+  
   if (!response.ok) {
     let errorMsg = `Failed to ${context}`;
+    
     try {
-      const errorData = await response.json();
-      if (errorData.error) {
-        if (typeof errorData.error === 'string') {
-          errorMsg = errorData.error;
-        } else if (typeof errorData.error === 'object') {
-          errorMsg = errorData.error.message || errorData.error.details || JSON.stringify(errorData.error);
+      // First try to get the raw text to be safe
+      const text = await response.text();
+      try {
+        const errorData = JSON.parse(text);
+        if (errorData.error) {
+          if (typeof errorData.error === 'string') {
+            errorMsg = errorData.error;
+          } else if (typeof errorData.error === 'object') {
+            errorMsg = errorData.error.message || errorData.error.details || JSON.stringify(errorData.error);
+          }
+        } else if (errorData.message) {
+          errorMsg = errorData.message;
         }
-      } else if (errorData.message) {
-        errorMsg = errorData.message;
+      } catch {
+        // Not a JSON error, use the raw text if available
+        if (text) errorMsg = text;
       }
     } catch {
-      try {
-        const text = await response.text();
-        errorMsg = text || errorMsg;
-      } catch {
-      }
+      // Failed to read body at all
     }
+    
     throw new Error(errorMsg);
   }
+  
   return response.json();
 }
 

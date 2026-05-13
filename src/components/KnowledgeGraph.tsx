@@ -23,12 +23,17 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ nodes, edges }) 
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!svgRef.current || !containerRef.current || nodes.length === 0) return;
+    if (!svgRef.current || !containerRef.current || nodes.length === 0) {
+      console.log("[KnowledgeGraph] No data or refs missing", { nodes: nodes.length, svg: !!svgRef.current, container: !!containerRef.current });
+      return;
+    }
 
+    console.log("[KnowledgeGraph] Initializing with data:", { nodesCount: nodes.length, edgesCount: edges.length });
+    
     // Clear previous graph
     d3.select(svgRef.current).selectAll("*").remove();
 
-    const width = containerRef.current.clientWidth;
+    const width = containerRef.current.clientWidth || 800;
     const height = 800;
 
     const svg = d3.select(svgRef.current)
@@ -40,12 +45,35 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ nodes, edges }) 
     const g = svg.append("g");
 
     // Zoom behavior
-    svg.call(d3.zoom<SVGSVGElement, unknown>()
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
       .extent([[0, 0], [width, height]])
       .scaleExtent([0.1, 8])
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
-      }));
+      });
+    
+    svg.call(zoom);
+
+    // Initial positioning - optional but helpful
+    // svg.call(zoom.transform, d3.zoomIdentity.translate(width/2, height/2).scale(0.8).translate(-width/2, -height/2));
+
+    // Resize handling
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width: newWidth } = entries[0].contentRect;
+      if (newWidth > 0) {
+        window.requestAnimationFrame(() => {
+          if (!svgRef.current) return;
+          svg.attr("width", newWidth);
+          simulation.force("center", d3.forceCenter(newWidth / 2, height / 2));
+          simulation.alpha(0.3).restart();
+        });
+      }
+    });
+
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
 
     // Clone data to avoid mutating original arrays
     const dataNodes = nodes.map(d => ({ ...d }));
@@ -132,7 +160,8 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ nodes, edges }) 
       .attr("dy", 4)
       .attr("font-size", "10px")
       .attr("font-weight", "600")
-      .attr("fill", "#1e293b")
+      .attr("fill", "#f8fafc") // Visible white/slate-50
+      .style("text-shadow", "0 1px 2px rgba(0,0,0,0.8)")
       .text(d => d.label);
 
     // Hover interactions
@@ -193,11 +222,12 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ nodes, edges }) 
 
     return () => {
       simulation.stop();
+      resizeObserver.disconnect();
     };
   }, [nodes, edges]);
 
   return (
-    <div ref={containerRef} className="w-full bg-slate-50/50 rounded-2xl border border-slate-200 overflow-hidden shadow-inner">
+    <div ref={containerRef} className="w-full min-h-[800px] bg-transparent overflow-hidden">
       <svg ref={svgRef} className="w-full h-full cursor-move" style={{ minHeight: "800px" }} />
     </div>
   );

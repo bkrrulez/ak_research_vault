@@ -106,7 +106,7 @@ export default function LlmManagementPage() {
       const result = await startFetchNvidiaModels();
       toast({ 
         title: "Scan Complete", 
-        description: `Tested up to 999 models. Verified and saved ${result.count} fully compatible models.` 
+        description: `Tested up to 999 models. Verified and saved ${result.count} functional models.` 
       });
       // Refresh models list
       const modelsData = await fetchLlmModels();
@@ -410,9 +410,19 @@ export default function LlmManagementPage() {
                             <SelectItem key={m.model_id} value={m.model_id}>
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-slate-900">{m.model_id}</span>
-                                <span className="text-[8px] px-1.5 py-0.5 rounded font-black uppercase bg-emerald-50 text-emerald-600">
-                                  Full Engine
-                                </span>
+                                {m.non_stream_works && m.stream_works ? (
+                                  <span className="text-[8px] px-1.5 py-0.5 rounded font-black uppercase bg-emerald-50 text-emerald-600">
+                                    Full Engine
+                                  </span>
+                                ) : m.non_stream_works ? (
+                                  <span className="text-[8px] px-1.5 py-0.5 rounded font-black uppercase bg-blue-50 text-blue-600">
+                                    Non-Stream
+                                  </span>
+                                ) : m.stream_works ? (
+                                  <span className="text-[8px] px-1.5 py-0.5 rounded font-black uppercase bg-purple-50 text-purple-600">
+                                    Stream
+                                  </span>
+                                ) : null}
                               </div>
                             </SelectItem>
                           ))}
@@ -424,9 +434,9 @@ export default function LlmManagementPage() {
                         onClick={handleFetchModels} 
                         disabled={isFetchingModels || (apiKeys.length === 0 && !hasFallbackKey)}
                         variant="outline" 
-                        className="h-11 px-6 font-bold uppercase tracking-widest text-[10px] flex gap-2 border-2 border-slate-200 hover:border-primary hover:text-primary transition-all"
+                        className="h-11 px-6 font-bold uppercase tracking-widest text-[10px] flex gap-2 border-2 border-slate-200 hover:border-primary hover:bg-primary hover:text-white transition-all shadow-sm"
                       >
-                        {isFetchingModels ? <Activity size={14} className="animate-spin text-primary" /> : <RefreshCw size={14} />}
+                        {isFetchingModels ? <Activity size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                         {isFetchingModels ? "Testing..." : "Fetch Models"}
                       </Button>
                     </TableCell>
@@ -435,7 +445,7 @@ export default function LlmManagementPage() {
                         onClick={handleSaveModel} 
                         disabled={isSavingModel || !selectedModel}
                         className={`h-11 px-8 font-black uppercase tracking-[0.2em] text-[10px] shadow-lg transition-all ${
-                          selectedModel ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-slate-200'
+                          selectedModel ? 'bg-primary hover:bg-primary/90 shadow-primary/20' : 'bg-slate-200'
                         }`}
                       >
                         {isSavingModel ? <Activity size={14} className="animate-spin" /> : <Save size={14} className="mr-2" />}

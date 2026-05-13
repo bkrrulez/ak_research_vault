@@ -106,19 +106,33 @@ export default function ProjectPage() {
     setIsAnalyzingSemantic(true);
     // Note: We don't clear old data instantly so the user can still see something while it generates
     try {
+      console.log("Starting semantic map generation...");
       const data = await generateSemanticMap(links, project?.query || "General Research", id);
+      console.log("Semantic map data received:", data);
+      
       if (!data) throw new Error("No data received from engine.");
+      
+      const newNodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const newEdges = Array.isArray(data.edges) ? data.edges : [];
+      
+      console.log(`Setting semantic data: ${newNodes.length} nodes, ${newEdges.length} edges`);
+      
       setSemanticData({
-        nodes: Array.isArray(data.nodes) ? data.nodes : [],
-        edges: Array.isArray(data.edges) ? data.edges : []
+        nodes: newNodes,
+        edges: newEdges
       });
+      setActiveTab("graph");
       toast({ title: "Map Generated", description: "Semantic relationships extracted successfully." });
     } catch (err: any) {
       console.error("Semantic analysis error:", err);
+      
+      const isEolError = /422|410|end of life|no longer available/i.test(String(err.message || err)) || 
+                         String(err.message || "").includes("valid semantic structure");
+      
       toast({ 
         variant: "destructive", 
-        title: "Map Generation Failed", 
-        description: err.message || "An error occurred during analysis. Check console for details." 
+        title: isEolError ? "Model Outdated" : "Map Generation Failed", 
+        description: err.message || "An error occurred during analysis."
       });
     } finally {
       setIsAnalyzingSemantic(false);
@@ -131,7 +145,14 @@ export default function ProjectPage() {
       const { analysis } = await analyzeText(result.snippet || result.title, searchQuery);
       setAnalyzingResults(prev => ({ ...prev, [result.url]: { loading: false, text: analysis } }));
     } catch (err: any) {
-      toast({ variant: "destructive", title: "Analysis Failed", description: err.message });
+      const isEolError = /422|410|end of life|no longer available/i.test(String(err.message || err)) || 
+                         String(err.message || "").includes("valid semantic structure");
+
+      toast({ 
+        variant: "destructive", 
+        title: isEolError ? "Model Outdated" : "Analysis Failed", 
+        description: err.message || "An error occurred during analysis."
+      });
       setAnalyzingResults(prev => {
         const next = { ...prev };
         delete next[result.url];
@@ -162,6 +183,7 @@ export default function ProjectPage() {
       setSearchError(null);
       setProject(null);
       setSemanticData(null);
+      setIsAnalyzingSemantic(false); // Reset loading state when switching projects
       setLinks([]);
       loadData();
     }
@@ -223,8 +245,13 @@ export default function ProjectPage() {
       setLinks(lData);
       
       // Load semantic map if it exists
-      if (pData.semantic_map) {
-        setSemanticData(pData.semantic_map);
+      if (pData.semantic_map && typeof pData.semantic_map === 'object' && Object.keys(pData.semantic_map).length > 0) {
+        setSemanticData({
+          nodes: Array.isArray(pData.semantic_map.nodes) ? pData.semantic_map.nodes : [],
+          edges: Array.isArray(pData.semantic_map.edges) ? pData.semantic_map.edges : []
+        });
+      } else {
+        setSemanticData(null);
       }
     } catch (err) {
       console.error("Failed to load project data", err);
@@ -338,7 +365,7 @@ export default function ProjectPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Enter research query (e.g., 'Latest breakthroughs in solid state batteries')"
-                className="pl-11 h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-indigo-500/10 focus:border-indigo-500"
+                className="pl-11 h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-primary/10 focus:border-primary transition-all"
               />
             </div>
             <Button 
@@ -362,7 +389,7 @@ export default function ProjectPage() {
             <div className="h-6 w-px bg-slate-200 hidden sm:block mx-1" />
 
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-lg border border-slate-100 group transition-all">
-              <List className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+              <List className="w-3.5 h-3.5 text-slate-400 group-hover:text-primary transition-colors" />
               <select
                 value={ranking}
                 onChange={(e) => {
@@ -378,7 +405,7 @@ export default function ProjectPage() {
             </div>
 
             {filteredResults.length > 0 && (
-              <div className="flex items-center gap-2 px-4 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100 animate-in fade-in zoom-in duration-300">
+              <div className="flex items-center gap-2 px-4 py-1.5 bg-primary/10 text-primary rounded-lg border border-primary/20 animate-in fade-in zoom-in duration-300">
                 <span className="text-[10px] font-black uppercase tracking-widest">{filteredResults.length} Results Found</span>
               </div>
             )}
@@ -434,16 +461,16 @@ export default function ProjectPage() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.05 }}
               >
-                <Card className="border-slate-200 shadow-sm hover:border-indigo-500/30 transition-all group overflow-hidden relative">
-                  <div className="absolute top-0 left-0 w-1 h-full bg-slate-100 group-hover:bg-indigo-500 transition-colors" />
-                  <div className="absolute top-4 left-6 flex items-center justify-center w-6 h-6 rounded-full bg-slate-50 text-[10px] font-black text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-all border border-slate-100">
+                <Card className="border-slate-200 shadow-sm hover:border-primary/30 transition-all group overflow-hidden relative">
+                  <div className="absolute top-0 left-0 w-1 h-full bg-slate-100 group-hover:bg-primary transition-colors" />
+                  <div className="absolute top-4 left-6 flex items-center justify-center w-6 h-6 rounded-full bg-slate-50 text-[10px] font-black text-slate-400 group-hover:bg-primary/10 group-hover:text-primary transition-all border border-slate-100">
                     {idx + 1}
                   </div>
                   
                   <CardHeader className="p-6 pb-0 pl-16">
                     <div className="flex justify-between items-start mb-3">
                       <div className="flex items-center gap-2">
-                        <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-700 border-none">
+                        <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-primary/10 text-primary border-none">
                           {result.source}
                         </Badge>
                         <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest text-slate-500 border-slate-200">
@@ -459,7 +486,7 @@ export default function ProjectPage() {
                         {new Date(result.date).toLocaleDateString()}
                       </span>
                     </div>
-                    <CardTitle className="text-lg font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-snug">
+                    <CardTitle className="text-lg font-bold text-slate-900 group-hover:text-primary transition-colors leading-snug">
                       {result.title}
                     </CardTitle>
                   </CardHeader>
@@ -467,16 +494,16 @@ export default function ProjectPage() {
                     <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">
                       {result.snippet}
                     </p>
-
+ 
                     {analyzingResults[result.url] && (
-                      <div className="mb-6 p-4 rounded-xl bg-indigo-50/50 border border-indigo-100/50 animate-in fade-in slide-in-from-top-1 duration-300">
+                      <div className="mb-6 p-4 rounded-xl bg-primary/5 border border-primary/10 animate-in fade-in slide-in-from-top-1 duration-300">
                         <div className="flex items-center gap-2 mb-2">
-                          <BrainCircuit className="w-3.5 h-3.5 text-indigo-600" />
-                          <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">IA Intelligence Synthesis</span>
+                          <BrainCircuit className="w-3.5 h-3.5 text-primary" />
+                          <span className="text-[10px] font-black text-primary uppercase tracking-widest">IA Intelligence Synthesis</span>
                         </div>
                         {analyzingResults[result.url].loading ? (
                           <div className="flex items-center gap-3">
-                            <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />
+                            <Loader2 className="w-3 h-3 text-primary/40 animate-spin" />
                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Processing high-density data...</span>
                           </div>
                         ) : (
@@ -486,7 +513,7 @@ export default function ProjectPage() {
                         )}
                       </div>
                     )}
-
+ 
                     <div className="flex gap-3">
                       <Button variant="secondary" size="sm" asChild className="h-8 text-[10px] font-bold uppercase tracking-wider bg-slate-100 hover:bg-slate-200">
                         <a href={result.url} target="_blank" rel="noopener noreferrer">
@@ -497,7 +524,7 @@ export default function ProjectPage() {
                         <Button 
                           size="sm" 
                           onClick={() => handleAddLink(result)}
-                          className="h-8 text-[10px] font-bold uppercase tracking-wider bg-indigo-600 hover:bg-indigo-700"
+                          className="h-8 text-[10px] font-bold uppercase tracking-wider bg-primary hover:bg-primary/90 shadow-md shadow-primary/10"
                         >
                           <Plus className="w-3.5 h-3.5 mr-2" /> Add to project
                         </Button>
@@ -524,7 +551,7 @@ export default function ProjectPage() {
 
       <div className="space-y-4">
         {links.length === 0 ? (
-          <div className="py-24 text-center bg-white rounded-3xl border border-dashed border-slate-200">
+          <div className="py-24 text-center bg-white rounded-3xl border border-dashed border-slate-100">
             <LinkIcon className="w-12 h-12 text-slate-200 mx-auto mb-4" />
             <p className="text-slate-400 font-medium tracking-tight">No intelligence captured yet. Aggregate results from the search engine.</p>
           </div>
@@ -609,7 +636,7 @@ export default function ProjectPage() {
             <Button 
               onClick={handleAnalyzeSemanticMap}
               disabled={isAnalyzingSemantic || links.length === 0}
-              className="px-8 h-12 bg-indigo-600 text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 gap-2 min-w-[200px]"
+              className="px-8 h-12 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 gap-2 min-w-[200px]"
             >
               {isAnalyzingSemantic ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
               {isAnalyzingSemantic ? "Synthesizing..." : "Analyze Results"}
@@ -621,11 +648,11 @@ export default function ProjectPage() {
       {isAnalyzingSemantic ? (
         <div className="py-32 flex flex-col items-center gap-6 text-center">
           <div className="relative">
-            <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center border-8 border-indigo-50 shadow-inner">
-              <BrainCircuit className="w-12 h-12 text-indigo-500" />
+            <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center border-8 border-primary/5 shadow-inner">
+              <BrainCircuit className="w-12 h-12 text-primary" />
             </div>
-            <div className="absolute -inset-6 border-2 border-indigo-500/20 rounded-full animate-[spin_8s_linear_infinite]" />
-            <div className="absolute -inset-2 border-b-2 border-indigo-500 rounded-full animate-[spin_3s_ease-in-out_infinite]" />
+            <div className="absolute -inset-6 border-2 border-primary/20 rounded-full animate-[spin_8s_linear_infinite]" />
+            <div className="absolute -inset-2 border-b-2 border-primary rounded-full animate-[spin_3s_ease-in-out_infinite]" />
           </div>
           <div className="space-y-2">
             <h3 className="text-2xl font-bold text-slate-900">Neural Network Synthesis</h3>
@@ -634,12 +661,12 @@ export default function ProjectPage() {
             </p>
           </div>
         </div>
-      ) : semanticData ? (
+      ) : (semanticData && semanticData.nodes && semanticData.nodes.length > 0) ? (
         <div className="space-y-12">
           {/* Insights Grid */}
           <div className="space-y-6">
             <div className="flex items-center gap-4">
-              <Badge variant="secondary" className="bg-indigo-50 text-indigo-600 font-bold tracking-widest uppercase">Intelligence Clusters</Badge>
+              <Badge variant="secondary" className="bg-primary/10 text-primary font-bold tracking-widest uppercase">Intelligence Clusters</Badge>
               <div className="h-px flex-1 bg-slate-100" />
             </div>
             
@@ -651,13 +678,13 @@ export default function ProjectPage() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: idx * 0.03 }}
                 >
-                  <Card className="border-slate-200 shadow-sm hover:shadow-lg transition-all group overflow-hidden border-t-4 border-t-indigo-500 h-full">
+                  <Card className="border-slate-100 shadow-sm hover:shadow-md transition-all group overflow-hidden border-t-2 border-t-primary/40 h-full">
                     <CardHeader className="p-5 pb-3">
                       <div className="flex justify-between items-start mb-2">
                         <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest">{node.type || 'Entity'}</span>
-                        <Network className="w-4 h-4 text-slate-200 group-hover:text-indigo-400 transition-colors" />
+                        <Network className="w-4 h-4 text-slate-200 group-hover:text-primary transition-colors" />
                       </div>
-                      <CardTitle className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-tight">
+                      <CardTitle className="text-base font-bold text-slate-900 group-hover:text-primary transition-colors leading-tight">
                         {node.label || node.id || 'Unknown'}
                       </CardTitle>
                     </CardHeader>
@@ -670,9 +697,9 @@ export default function ProjectPage() {
                             const otherLabel = semanticData.nodes.find(n => n.id === otherId)?.label || otherId;
                             return (
                               <div key={eidx} className="flex items-start gap-2 text-[10px] py-1.5 border-b border-slate-50 last:border-0">
-                                <Activity className="w-3 h-3 text-indigo-400 shrink-0 mt-0.5" />
+                                <Activity className="w-3 h-3 text-primary/40 shrink-0 mt-0.5" />
                                 <div className="flex flex-col gap-0.5 min-w-0">
-                                  <span className="font-bold text-indigo-600 uppercase tracking-tighter leading-none">{edge.relation || 'LINKED TO'}</span>
+                                  <span className="font-bold text-primary uppercase tracking-tighter leading-none">{edge.relation || 'LINKED TO'}</span>
                                   <span className="text-slate-600 font-medium truncate">{otherLabel}</span>
                                 </div>
                               </div>
@@ -704,7 +731,7 @@ export default function ProjectPage() {
                     <span className="text-[10px] font-bold text-slate-400 uppercase">Person</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                    <div className="w-2 h-2 rounded-full bg-primary" />
                     <span className="text-[10px] font-bold text-slate-400 uppercase">Org</span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -752,26 +779,26 @@ export default function ProjectPage() {
       projectCode={`AK-${String(id || '').toUpperCase()}`}
     >
       <div className="flex flex-col h-full overflow-hidden">
-        <Tabs defaultValue="search" className="flex flex-col h-full" onValueChange={(val) => setActiveTab(val as Tab)}>
+        <Tabs value={activeTab} className="flex flex-col h-full" onValueChange={(val) => setActiveTab(val as Tab)}>
           <div className="px-8 bg-white border-b border-slate-200 shrink-0">
             <TabsList className="justify-start h-auto p-0 bg-transparent gap-8">
               <TabsTrigger 
                 value="search" 
-                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:bg-transparent data-[state=active]:text-indigo-600 data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
+                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
               >
                 <Search className="w-3.5 h-3.5" />
                 Search Engine
               </TabsTrigger>
               <TabsTrigger 
                 value="links" 
-                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:bg-transparent data-[state=active]:text-indigo-600 data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
+                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
               >
                 <LinkIcon className="w-3.5 h-3.5" />
                 Intelligence Vault ({links.length})
               </TabsTrigger>
               <TabsTrigger 
                 value="graph" 
-                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-indigo-600 data-[state=active]:bg-transparent data-[state=active]:text-indigo-600 data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
+                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
               >
                 <Share2 className="w-3.5 h-3.5" />
                 Semantic Map
@@ -785,7 +812,7 @@ export default function ProjectPage() {
                 {isLoading ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-slate-50/50 backdrop-blur-[1px] z-10">
                     <div className="flex flex-col items-center gap-4">
-                      <Activity className="w-10 h-10 text-indigo-400 animate-spin" />
+                      <Activity className="w-10 h-10 text-primary/40 animate-spin" />
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Synchronizing Workspace...</p>
                     </div>
                   </div>

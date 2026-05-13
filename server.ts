@@ -134,11 +134,11 @@ apiRouter.post("/auth/login", async (req, res) => {
     console.log(`[AUTH] Login attempt for: ${email}`);
     
     // Default Admin Check
-    const defaultAdminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL || "admin@example.com";
-    const defaultAdminPass = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || "adminadmin";
+    const defaultAdminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+    const defaultAdminPass = process.env.NEXT_PUBLIC_ADMIN_PASSWORD;
     
     let user;
-    if (email === defaultAdminEmail && password === defaultAdminPass) {
+    if (defaultAdminEmail && defaultAdminPass && email === defaultAdminEmail && password === defaultAdminPass) {
       console.log(`[AUTH] Default admin login detected`);
       user = {
         email: defaultAdminEmail,
@@ -233,7 +233,7 @@ apiRouter.get("/users", authenticate, isAdmin, async (req, res) => {
     
     const defaultAdmin = {
       id: "admin-default",
-      email: process.env.NEXT_PUBLIC_ADMIN_EMAIL || "admin@example.com",
+      email: process.env.NEXT_PUBLIC_ADMIN_EMAIL || "SystemAdmin",
       full_name: "System Admin",
       role: "Admin",
       access_start_date: "2023-01-01",
@@ -511,7 +511,7 @@ apiRouter.post("/llm/fetch-models", authenticate, async (req: any, res) => {
         // Silent fail
       }
 
-      if (nonStreamWorks && streamWorks) {
+      if (nonStreamWorks || streamWorks) {
         return {
           user_email: normalizedEmail,
           model_id: modelId,
@@ -607,19 +607,24 @@ apiRouter.post("/llm/analyze", authenticate, async (req: any, res) => {
   }
 });
 
-apiRouter.post("/llm/semantic-map", authenticate, async (req: any, res) => {
+  apiRouter.post("/llm/semantic-map", authenticate, async (req: any, res) => {
   try {
     const { items, query, projectId } = req.body;
+    console.log(`[LLM] Generating semantic map for project ${projectId}. Items: ${items?.length}. Query: "${query}"`);
+    
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "No items provided for analysis." });
     }
 
     const { apiKey, modelId } = await getLlmConfig(req.user.email);
+    console.log(`[LLM] Config resolved. Model: ${modelId}. Has Key: ${!!apiKey}`);
+
     if (!apiKey || !modelId) {
       return res.status(400).json({ error: "LLM not configured correctly. Please set NVIDIA API key and select a model in LLM Management." });
     }
 
     const textToAnalyze = items.map(item => `Title: ${item.title}\nContent: ${item.snippet}`).join("\n\n---\n\n");
+    console.log(`[LLM] Text prepared. Length: ${textToAnalyze.length} chars. Calling NVIDIA API...`);
     
     const baseUrl = "https://integrate.api.nvidia.com/v1";
     const response = await axios.post(`${baseUrl}/chat/completions`, {
@@ -627,20 +632,23 @@ apiRouter.post("/llm/semantic-map", authenticate, async (req: any, res) => {
       messages: [
         { 
           role: "system", 
-          content: `You are a Semantic Intelligence Engine. Analyze the following news pieces related to "${query}". 
-          Extract the most important entities (Organizations, People, Technologies, Events) and the relationships between them.
-          
-          OUTPUT ONLY A VALID JSON OBJECT with this structure:
-          {
-            "nodes": [{"id": "string", "label": "string", "type": "string"}],
-            "edges": [{"source": "string", "target": "string", "relation": "string"}]
-          }
-          
-          Provide a comprehensive mapping with up to 26 significant nodes and 75 significant edges. Ensure the graph scales with the complexity of the provided items.`
+          content: `Return ONLY valid JSON.
+
+STRICT RULES:
+- No markdown
+- No backticks
+- No explanations
+- No text before or after JSON
+- Must start with { and end with }
+- Use double quotes only
+- No trailing commas
+
+If invalid → return:
+{"nodes":[],"edges":[]}`
         },
         { 
           role: "user", 
-          content: textToAnalyze 
+          content: `Generate a semantic map for the query "${query}" based on these news items:\n\n${textToAnalyze}`
         }
       ],
       temperature: 0.1
@@ -649,89 +657,163 @@ apiRouter.post("/llm/semantic-map", authenticate, async (req: any, res) => {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
-      timeout: 300000
+      timeout: 300000 // 5 minutes
     });
 
+    console.log(`[LLM] Response received. Model: ${modelId}. Parsing...`);
+
     if (!response.data || !response.data.choices || response.data.choices.length === 0) {
+      console.error("[LLM] Empty choices in response:", response.data);
       return res.status(500).json({ error: "LLM failed to return a response choice." });
     }
 
-    const semanticDataRaw = response.data.choices?.[0]?.message?.content;
+    const semanticDataRaw = response.data.choices?.[0]?.message?.content || response.data.choices?.[0]?.text;
     let semanticData: any = null;
+
+    function tryParse(jsonStr: string): boolean {
+      // Sequential fixes
+      const fixes = [
+        (s: string) => s, // As is
+        (s: string) => s.replace(/,\s*([}\]])/g, '$1'), // Remove trailing commas
+        (s: string) => s.replace(/\/\*[\s\S]*?\*\/|([^:]|^)\/\/.*$/gm, '$1'), // Remove comments
+        (s: string) => s.replace(/([{,]\s*)([a-zA-Z0-9_]+)(\s*:)/g, '$1"$2"$3'), // Quote keys
+        (s: string) => {
+          // Fix truncated JSON by adding closing braces
+          let openBraces = (s.match(/\{/g) || []).length;
+          let closeBraces = (s.match(/\}/g) || []).length;
+          let openBrackets = (s.match(/\[/g) || []).length;
+          let closeBrackets = (s.match(/\]/g) || []).length;
+          
+          let repaired = s;
+          while (closeBrackets < openBrackets) { repaired += ']'; closeBrackets++; }
+          while (closeBraces < openBraces) { repaired += '}'; closeBraces++; }
+          return repaired;
+        }
+      ];
+
+      for (const fix of fixes) {
+        try {
+          const repaired = fix(jsonStr);
+          const parsed = JSON.parse(repaired);
+          if (parsed && typeof parsed === 'object') {
+            // Basic heuristic: check if it looks like what we wanted or at least has content
+            if (Array.isArray(parsed.nodes) || Array.isArray(parsed.edges) || (parsed.nodes && typeof parsed.nodes === 'object')) {
+              semanticData = parsed;
+              console.log(`[LLM] Parse successful with automated repair (fix ${fixes.indexOf(fix)}).`);
+              return true;
+            }
+          }
+        } catch (e) {}
+      }
+      return false;
+    }
     
     if (typeof semanticDataRaw === 'string' && semanticDataRaw.length > 0) {
+      let cleaned = semanticDataRaw.trim();
+      
+      // REMOVE MARKDOWN FENCES (robust)
+      cleaned = cleaned
+        .replace(/^```json\s*/i, "")
+        .replace(/^```\s*/i, "")
+        .replace(/```$/i, "")
+        .trim();
+
+      // EXTRA SAFETY: remove ANY stray backticks
+      cleaned = cleaned.replace(/`/g, "");
+
+      // Extract JSON if wrapped with text
+      const b1 = cleaned.indexOf("{");
+      const b2 = cleaned.lastIndexOf("}");
+
+      if (b1 !== -1 && b2 !== -1 && b2 > b1) {
+        cleaned = cleaned.substring(b1, b2 + 1);
+      }
+
+      console.log(`[LLM] Cleaned Response Snippet: ${cleaned.slice(0, 250)}...`);
+      
       try {
-        // Try direct parse first
-        semanticData = JSON.parse(semanticDataRaw);
-      } catch (e) {
-        // Fallback: extract JSON from markdown if necessary
-        const jsonMatch = semanticDataRaw.match(/```json\n([\s\S]*?)\n```/) || 
-                          semanticDataRaw.match(/```([\s\S]*?)```/) ||
-                          semanticDataRaw.match(/{[\s\S]*}/);
-        if (jsonMatch) {
-          try {
-            const potentialJson = (jsonMatch[1] || jsonMatch[0]).trim();
-            semanticData = JSON.parse(potentialJson);
-          } catch (pe) {
-            console.error("Failed to parse extracted JSON content:", pe);
-          }
+        semanticData = JSON.parse(cleaned);
+      } catch (e: any) {
+        console.log(`[LLM] Standard parse failed. Attempting repair...`);
+        if (!tryParse(cleaned)) {
+           console.error("[LLM] ALL PARSE ATTEMPTS FAILED:", cleaned);
         }
       }
     } else if (typeof semanticDataRaw === 'object' && semanticDataRaw !== null) {
       semanticData = semanticDataRaw;
     }
 
+    // Validation and Normalization
     if (!semanticData || typeof semanticData !== 'object') {
-      console.error("Invalid semantic data format returned:", semanticDataRaw);
+      console.error("[LLM] Failed to extract any valid JSON object from:", semanticDataRaw);
       return res.status(500).json({ 
-        error: "Model failed to return a valid semantic structure. It returned: " + 
-               (typeof semanticDataRaw === 'string' ? (semanticDataRaw.slice(0, 100) + '...') : 'non-string data')
+        error: "Model failed to return a valid semantic structure.",
+        raw: typeof semanticDataRaw === 'string' ? semanticDataRaw.slice(0, 500) : "Invalid format"
       });
     }
 
-    // Ensure they are arrays and have basic structure
+    // Try to find nodes/edges if nested
+    if (!Array.isArray(semanticData.nodes) && semanticData.analysis && Array.isArray(semanticData.analysis.nodes)) {
+       semanticData = semanticData.analysis;
+    } else if (!Array.isArray(semanticData.nodes) && semanticData.data && Array.isArray(semanticData.data.nodes)) {
+       semanticData = semanticData.data;
+    }
+
     semanticData.nodes = Array.isArray(semanticData.nodes) ? semanticData.nodes : [];
     semanticData.edges = Array.isArray(semanticData.edges) ? semanticData.edges : [];
     
-    // Deduplicate nodes if the model returned duplicates
-    const uniqueNodes = [];
-    const seenIds = new Set();
-    for (const node of semanticData.nodes) {
-      if (node && node.id && !seenIds.has(node.id.toString())) {
-        const idStr = node.id.toString();
-        seenIds.add(idStr);
-        uniqueNodes.push({
-          ...node,
-          id: idStr,
-          label: node.label || idStr
-        });
-      }
-    }
+    // Post-process to ensure IDs match and labels exist
+    const seenIds = new Set<string>();
+    const uniqueNodes: any[] = [];
+    
+    semanticData.nodes.forEach((n: any) => {
+      if (!n) return;
+      const id = String(n.id || n.label || '').trim();
+      if (!id || seenIds.has(id)) return;
+      
+      seenIds.add(id);
+      uniqueNodes.push({
+        id,
+        label: String(n.label || id || 'Entity'),
+        type: String(n.type || 'Entity')
+      });
+    });
+    
     semanticData.nodes = uniqueNodes;
 
-    // Filter out edges that reference non-existent nodes
-    semanticData.edges = semanticData.edges.filter((edge: any) => {
-      if (!edge || !edge.source || !edge.target) return false;
-      return seenIds.has(edge.source.toString()) && seenIds.has(edge.target.toString());
-    }).map((edge: any) => ({
-      ...edge,
-      source: edge.source.toString(),
-      target: edge.target.toString()
-    }));
+    semanticData.edges = semanticData.edges
+      .map((e: any) => ({
+        source: String(e.source || '').trim(),
+        target: String(e.target || '').trim(),
+        relation: String(e.relation || 'LINKED_TO')
+      }))
+      .filter((e: any) => 
+        e.source && e.target && seenIds.has(e.source) && seenIds.has(e.target)
+      );
+
+    console.log(`[LLM] Successfully extracted ${semanticData.nodes.length} nodes and ${semanticData.edges.length} edges.`);
+
+    // Bonus: Fallback safety
+    if (!semanticData.nodes || !semanticData.edges || semanticData.nodes.length === 0) {
+       return res.json({ nodes: [], edges: [] });
+    }
 
     // Save to project if projectId is provided
     if (projectId) {
-      const { error: updateError } = await supabase
-        .from("projects")
-        .update({ semantic_map: semanticData })
-        .eq("id", projectId)
-        .eq("user_email", req.user.email);
-      
-      if (updateError) {
-        console.error("[LLM] Failed to save semantic map to project:", updateError);
-        // We don't fail the whole request, but we log the error
-      } else {
-        console.log(`[LLM] Semantic map persisted for project ${projectId}`);
+      try {
+        const { error: updateError } = await supabase
+          .from("projects")
+          .update({ semantic_map: semanticData })
+          .eq("id", projectId)
+          .eq("user_email", req.user.email);
+        
+        if (updateError) {
+          console.error("[LLM] Failed to save semantic map to project:", updateError);
+        } else {
+          console.log(`[LLM] Semantic map persisted for project ${projectId}`);
+        }
+      } catch (persE) {
+        console.error("[LLM] Persist error:", persE);
       }
     }
 
