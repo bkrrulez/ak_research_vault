@@ -52,17 +52,24 @@ dotenv.config({ path: ".env.local", override: true });
 
 const app = express();
 const PORT = 3000;
-const rssParser = new Parser();
+const rssParser = new Parser({
+  headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36' },
+  timeout: 5000
+});
 
 // Initialize Supabase
 const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn("WARNING: SUPABASE_URL or SUPABASE_ANON_KEY is missing.");
 }
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Prefer the Service Role Key for backend-to-database requests to securely bypass RLS restrictions,
+// and gracefully fall back to the Anonymous Key in systems where service role credentials are omitted from process environment.
+const supabaseKey = supabaseServiceRoleKey || supabaseAnonKey;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -293,6 +300,92 @@ apiRouter.delete("/users/:id", authenticate, isAdmin, async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     handleApiError(res, error, "deleteUser");
+  }
+});
+
+// PROFILE
+apiRouter.get("/profile", authenticate, async (req: any, res) => {
+  try {
+    const email = req.user.email;
+    
+    // Check if it's the default admin
+    if (email === process.env.NEXT_PUBLIC_ADMIN_EMAIL) {
+      return res.json({
+        email: email,
+        full_name: "Admin Account",
+        role: "Admin",
+        access_start_date: "2023-01-01",
+        access_end_date: "2099-12-31",
+        is_system_admin: true
+      });
+    }
+
+    const { data, error } = await supabase
+      .from("vault_users")
+      .select("*")
+      .eq("email", email)
+      .single();
+    
+    if (error || !data) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Don't send password
+    const { password, ...safeData } = data;
+    res.json(safeData);
+  } catch (error) {
+    handleApiError(res, error, "getProfile");
+  }
+});
+
+apiRouter.post("/profile/change-password", authenticate, async (req: any, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const email = req.user.email;
+
+    // Check if it's the default admin
+    if (email === process.env.NEXT_PUBLIC_ADMIN_EMAIL) {
+      return res.status(403).json({ error: "System Admin password cannot be changed via this interface." });
+    }
+
+    // 1. Fetch user to verify current password
+    const { data: user, error } = await supabase
+      .from("vault_users")
+      .select("*")
+      .eq("email", email)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // 2. Verify current password
+    // Supporting both bcrypt and plain text migration
+    let isMatch = false;
+    const dbPassword = user.password || "";
+    
+    if (dbPassword.startsWith("$2b$") || dbPassword.startsWith("$2a$")) {
+      isMatch = await bcrypt.compare(currentPassword, dbPassword);
+    } else {
+      isMatch = currentPassword === dbPassword;
+    }
+
+    if (!isMatch) {
+      return res.status(401).json({ error: "Incorrect current password" });
+    }
+
+    // 3. Hash and update new password
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    const { error: updateError } = await supabase
+      .from("vault_users")
+      .update({ password: hashedPassword })
+      .eq("email", email);
+
+    if (updateError) throw updateError;
+
+    res.json({ success: true, message: "Password updated successfully" });
+  } catch (error) {
+    handleApiError(res, error, "changePassword");
   }
 });
 
@@ -632,23 +725,37 @@ apiRouter.post("/llm/analyze", authenticate, async (req: any, res) => {
       messages: [
         { 
           role: "system", 
-          content: `Return ONLY valid JSON.
+          content: `Return ONLY valid JSON for a knowledge graph.
+          
+SCHEMA:
+{
+  "nodes": [
+    {"id": "unique_id", "label": "Display Name", "type": "PERSON | ORG | CONCEPT"}
+  ],
+  "edges": [
+    {"source": "id_1", "target": "id_2", "relation": "relationship_name"}
+  ]
+}
+
+ENTITY TYPES:
+- PERSON: Individuals, key figures, specific people mentioned.
+- ORG: Organizations, companies, clubs, governments, teams, groups.
+- CONCEPT: Topics, events, technologies, locations, cities, countries, or abstract research findings.
 
 STRICT RULES:
-- No markdown
-- No backticks
-- No explanations
-- No text before or after JSON
-- Must start with { and end with }
-- Use double quotes only
-- No trailing commas
-
-If invalid → return:
-{"nodes":[],"edges":[]}`
+- No markdown, no backticks.
+- No explanations.
+- Output ONLY the JSON object.
+- Use ONLY PERSON, ORG, or CONCEPT as the "type" value.
+- If data is missing return {"nodes":[],"edges":[]}
+`
         },
         { 
           role: "user", 
-          content: `Generate a semantic map for the query "${query}" based on these news items:\n\n${textToAnalyze}`
+          content: `Analyze the following research intelligence for the topic "${query}" and extract a dense semantic web of entities and their relations.
+          
+          INTELLIGENCE DATA:
+          ${textToAnalyze}`
         }
       ],
       temperature: 0.1
@@ -820,6 +927,215 @@ If invalid → return:
     res.json(semanticData);
   } catch (error) {
     handleApiError(res, error, "semantic map generation");
+  }
+});
+
+apiRouter.post("/llm/summarize", authenticate, async (req: any, res) => {
+  try {
+    const { projectId, items, query, wordCount } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "No intelligence vault items selected to summarize." });
+    }
+
+    const { apiKey, modelId } = await getLlmConfig(req.user.email);
+    
+    if (!apiKey) {
+      return res.status(401).json({ error: "NVIDIA API Key not configured. Please add an API Key." });
+    }
+
+    if (!modelId) {
+      return res.status(400).json({ error: "No LLM model selected. Please select one in LLM Management." });
+    }
+
+    const textToSummarize = items.map((item, idx) => `[${idx+1}] Title: ${item.title}\nSource: ${item.source}\nLink: ${item.url}\nContent: ${item.snippet}`).join("\n\n---\n\n");
+    
+    const baseUrl = "https://integrate.api.nvidia.com/v1";
+    const prompt = `You are a Senior Strategic Intelligence Analyst.
+Analyze the following custom gathered research intelligence on the topic "${query}" and write a comprehensive, highly insightful intelligence summary.
+
+STRICT INSTRUCTIONS:
+1. Start your response with a single markdown H1 heading (e.g. "# Briefing Heading: ...") representing an apt, compelling, and professional intelligence title.
+2. Under the heading, write the body of the summary, maintaining high density of facts, trends, source coverage, and regional analysis.
+3. The body content MUST contain approximately ${wordCount} words (be very careful to target around ${wordCount} words as closely as possible, between ${Math.max(50, Math.floor(wordCount * 0.95))} and ${Math.min(1500, Math.ceil(wordCount * 1.05))} words).
+4. Integrate the sources, links, and search strings provided naturally in your narrative to ground your intelligence report.
+5. Present the summary in clean, readable paragraphs. You may use bullet points or bold text to break down complex issues.
+6. Do not include any intros or outros like "Here is your summary..." or "Word count check...". Start immediately with the H1 heading.
+
+INTELLIGENCE DATA SOURCES:
+${textToSummarize}`;
+
+    console.log(`[LLM/SUMMARY] Initiating summary for project ${projectId}. Word Target: ${wordCount}. Calling model ${modelId}`);
+
+    const response = await axios.post(`${baseUrl}/chat/completions`, {
+      model: modelId,
+      messages: [
+        { 
+          role: "system", 
+          content: "You are a senior Intelligence Officer summarizing checked information into tailored briefing packages." 
+        },
+        { 
+          role: "user", 
+          content: prompt 
+        }
+      ],
+      temperature: 0.3,
+      max_tokens: 2048
+    }, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 300000 // 5 minutes
+    });
+
+    const summaryText = response.data.choices?.[0]?.message?.content || "";
+    if (!summaryText) {
+      return res.status(500).json({ error: "The LLM didn't return any summary output." });
+    }
+
+    // Parse title and body
+    let heading = "Intelligence Briefing Summary";
+    let body = summaryText;
+    
+    const lines = summaryText.split("\n");
+    const h1Index = lines.findIndex(l => l.trim().startsWith("# "));
+    if (h1Index !== -1) {
+      heading = lines[h1Index].replace(/^#\s*/, "").trim();
+      body = lines.slice(h1Index + 1).join("\n").trim();
+    }
+
+    const summaryResult: any = {
+      heading,
+      body,
+      rawText: summaryText,
+      wordCountTarget: wordCount,
+      generatedAt: new Date().toISOString()
+    };
+
+    // Save to project_summaries table for historical records
+    if (projectId) {
+      try {
+        const { data: insertedRecord, error: insertError } = await supabase
+          .from("project_summaries")
+          .insert([{
+            project_id: projectId,
+            heading,
+            body,
+            word_count: wordCount,
+            raw_text: summaryText
+          }])
+          .select()
+          .single();
+
+        if (insertError) {
+          console.error("[LLM/SUMMARY] Failed to insert into project_summaries:", insertError);
+        } else if (insertedRecord) {
+          console.log(`[LLM/SUMMARY] Successfully logged historical summary with ID ${insertedRecord.id}`);
+          summaryResult.id = insertedRecord.id;
+          summaryResult.generatedAt = insertedRecord.created_at;
+        }
+      } catch (dbErr) {
+        console.error("[LLM/SUMMARY] Historic table insert error:", dbErr);
+      }
+    }
+
+    // Save to projects table inside the 'settings' JSONB column for compatibility
+    if (projectId) {
+      try {
+        const { data: projectData, error: fetchError } = await supabase
+          .from("projects")
+          .select("settings")
+          .eq("id", projectId)
+          .eq("user_email", req.user.email)
+          .single();
+
+        if (!fetchError && projectData) {
+          const updatedSettings = {
+            ...(projectData.settings || {}),
+            summary: summaryResult
+          };
+
+          const { error: updateError } = await supabase
+            .from("projects")
+            .update({ settings: updatedSettings })
+            .eq("id", projectId)
+            .eq("user_email", req.user.email);
+
+          if (updateError) {
+            console.error("[LLM/SUMMARY] Failed to save summary to project settings:", updateError);
+          } else {
+            console.log(`[LLM/SUMMARY] Summary saved to project settings for ${projectId}`);
+          }
+        }
+      } catch (dbErr) {
+        console.error("[LLM/SUMMARY] Supabase DB write error ignored:", dbErr);
+      }
+    }
+
+    res.json(summaryResult);
+  } catch (error) {
+    handleApiError(res, error, "LLM summarization");
+  }
+});
+
+// GET all summaries for a project
+apiRouter.get("/projects/:id/summaries", authenticate, async (req: any, res) => {
+  try {
+    const projectId = req.params.id;
+
+    // First make sure the project belongs to the user
+    const { data: project, error: pError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("user_email", req.user.email)
+      .single();
+
+    if (pError || !project) {
+      return res.status(403).json({ error: "Access denied or project not found" });
+    }
+
+    const { data, error } = await supabase
+      .from("project_summaries")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (error: any) {
+    handleApiError(res, error, "fetching project summaries");
+  }
+});
+
+// DELETE a specific historical summary from a project
+apiRouter.delete("/projects/:id/summaries/:summaryId", authenticate, async (req: any, res) => {
+  try {
+    const projectId = req.params.id;
+    const summaryId = req.params.summaryId;
+
+    // Verify authorized project ownership
+    const { data: project, error: pError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("user_email", req.user.email)
+      .single();
+
+    if (pError || !project) {
+      return res.status(403).json({ error: "Access denied or project not found" });
+    }
+
+    const { error } = await supabase
+      .from("project_summaries")
+      .delete()
+      .eq("id", summaryId)
+      .eq("project_id", projectId);
+
+    if (error) throw error;
+    res.json({ success: true, id: summaryId });
+  } catch (error: any) {
+    handleApiError(res, error, "deleting summary from history");
   }
 });
 
@@ -1219,13 +1535,14 @@ async function searchGoogleNews(query: string, regions: string[] = ["Global"], l
     const regionMap: Record<string, string> = {
       "US": "US", "GB": "GB", "IN": "IN", "CA": "CA", "AU": "AU", 
       "IL": "IL", "PK": "PK", "FR": "FR", "DE": "DE", "CN": "CN", 
-      "JP": "JP", "BR": "BR", "Global": "US"
+      "JP": "JP", "BR": "BR", "RU": "RU", "Global": "US"
     };
 
     const langMap: Record<string, string> = {
       "en": "en", "es": "es", "fr": "fr", "de": "de", "zh": "zh-CN", 
       "ja": "ja", "he": "he", "ur": "ur", "ar": "ar", "hi": "hi",
-      "tr": "tr", "vi": "vi", "ru": "ru", "ko": "ko"
+      "tr": "tr", "vi": "vi", "ru": "ru", "ko": "ko",
+      "it": "it", "sq": "sq", "sh": "hr"
     };
 
     // Construct search tasks for each combination of region and language
@@ -1389,35 +1706,98 @@ async function searchTavily(query: string, userEmail?: string) {
 
 async function searchRSS(query: string) {
   const commonFeeds = [
-    "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
-    "https://feeds.bbci.co.uk/news/rss.xml",
-    "https://feeds.reuters.com/reuters/topNews",
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://abcnews.go.com/abcnews/topstories",
-    "https://www.theguardian.com/world/rss",
-    "https://techcrunch.com/feed/",
-    "https://www.ft.com/?format=rss",
-    "https://www.economist.com/sections/international/rss.xml",
-    "https://www.timesofisrael.com/feed/",
-    "https://www.jpost.com/rss/rssfeeds.aspx?categoryid=1",
-    "https://www.dawn.com/feeds/home/",
-    "https://www.thenews.com.pk/rss/1/1",
-    "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
-    "https://www.lemonde.fr/rss/une.xml",
-    "https://www.spiegel.de/index.rss",
-    "https://www.haaretz.com/cmlink/1.4552462",
-    "https://www.trtworld.com/rss",
-    "https://www.iran-daily.com/RSS",
-    "https://www.tehrantimes.com/rss",
-    "https://www.scmp.com/rss/91/feed",
-    "https://www.japantimes.co.jp/feed/",
-    "https://www.dw.com/en/top-stories/rss"
+    // Global & Legacy Feeds
+    { url: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", region: "US", language: "en" },
+    { url: "https://feeds.bbci.co.uk/news/rss.xml", region: "GB", language: "en" },
+    { url: "https://feeds.reuters.com/reuters/topNews", region: "Global", language: "en" },
+    { url: "https://www.aljazeera.com/xml/rss/all.xml", region: "Global", language: "en" },
+    { url: "https://abcnews.go.com/abcnews/topstories", region: "US", language: "en" },
+    { url: "https://www.theguardian.com/world/rss", region: "GB", language: "en" },
+    { url: "https://techcrunch.com/feed/", region: "US", language: "en" },
+    { url: "https://www.ft.com/?format=rss", region: "GB", language: "en" },
+    { url: "https://www.economist.com/sections/international/rss.xml", region: "Global", language: "en" },
+    { url: "https://www.timesofisrael.com/feed/", region: "IL", language: "en" },
+    { url: "https://www.jpost.com/rss/rssfeeds.aspx?categoryid=1", region: "IL", language: "en" },
+    { url: "https://www.dawn.com/feeds/home/", region: "PK", language: "en" },
+    { url: "https://www.thenews.com.pk/rss/1/1", region: "PK", language: "en" },
+    { url: "https://economictimes.indiatimes.com/rssfeedstopstories.cms", region: "IN", language: "en" },
+    { url: "https://www.lemonde.fr/rss/une.xml", region: "FR", language: "fr" },
+    { url: "https://www.spiegel.de/index.rss", region: "DE", language: "de" },
+    { url: "https://www.haaretz.com/cmlink/1.4552462", region: "IL", language: "en" },
+    { url: "https://www.trtworld.com/rss", region: "TR", language: "en" },
+    { url: "https://www.iran-daily.com/RSS", region: "Global", language: "en" },
+    { url: "https://www.tehrantimes.com/rss", region: "Global", language: "en" },
+    { url: "https://www.scmp.com/rss/91/feed", region: "CN", language: "en" },
+    { url: "https://www.japantimes.co.jp/feed/", region: "JP", language: "en" },
+    { url: "https://www.dw.com/en/top-stories/rss", region: "DE", language: "en" },
+
+    // Russia / Eurasia
+    { url: "https://tass.com/rss/v2.xml", region: "RU", language: "en" },
+    { url: "https://www.rt.com/rss/news/", region: "RU", language: "en" },
+    { url: "https://sputnikglobe.com/export/rss2/archive/index.xml", region: "RU", language: "en" },
+    { url: "https://meduza.io/rss/en/all", region: "RU", language: "en" },
+    { url: "https://www.themoscowtimes.com/rss/news", region: "RU", language: "en" },
+    { url: "https://interfax.com/news.xml", region: "RU", language: "en" },
+
+    // China
+    { url: "https://english.news.cn/rss/worldrss.xml", region: "CN", language: "en" },
+    { url: "https://www.globaltimes.cn/rss/index.xml", region: "CN", language: "en" },
+    { url: "https://www.chinadaily.com.cn/rss/top_stories.xml", region: "CN", language: "en" },
+    { url: "https://www.cgtn.com/rss/news.xml", region: "CN", language: "en" },
+
+    // Taiwan Perspective
+    { url: "https://www.taipeitimes.com/xml/index.xml", region: "CN", language: "en" },
+    { url: "https://focustaiwan.tw/rss/mostread.xml", region: "Global", language: "en" },
+
+    // North Korea
+    { url: "https://kcnawatch.org/feed/", region: "Global", language: "en" },
+    { url: "https://kcnawatch.org/feed/rodong/", region: "Global", language: "en" },
+    { url: "https://www.38north.org/feed/", region: "Global", language: "en" },
+    { url: "https://www.nknews.org/feed/", region: "Global", language: "en" },
+
+    // Africa
+    { url: "https://allafrica.com/tools/headlines/rss/main/main.xml", region: "Global", language: "en" },
+    { url: "https://www.africanews.com/feed/", region: "Global", language: "en" },
+    { url: "https://feeds.24.com/articles/news24/TopStories/rss", region: "Global", language: "en" },
+    { url: "https://mg.co.za/feed/", region: "Global", language: "en" },
+    { url: "https://punchng.com/feed/", region: "Global", language: "en" },
+    { url: "https://www.premiumtimesng.com/feed", region: "Global", language: "en" },
+    { url: "https://nation.africa/feed", region: "Global", language: "en" },
+    { url: "https://english.ahram.org.eg/rss/World.aspx", region: "Global", language: "en" },
+
+    // Latin America
+    { url: "https://www.telesurenglish.net/rss/RssAll.html", region: "Global", language: "en" },
+    { url: "https://en.mercopress.com/rss/", region: "Global", language: "en" },
+    { url: "https://feeds.folha.uol.com.br/internacional/en/rss091.xml", region: "BR", language: "en" },
+    { url: "https://g1.globo.com/dynamo/rss2.xml", region: "BR", language: "pt" },
+    { url: "https://www.batimes.com.ar/rss", region: "Global", language: "en" },
+    { url: "https://www.eluniversal.com.mx/mundo/rss.xml", region: "Global", language: "es" },
+    { url: "https://www.bnamericas.com/en/rss/news", region: "Global", language: "en" },
+
+    // Southeast Asia
+    { url: "https://www.straitstimes.com/news/world/rss.xml", region: "Global", language: "en" },
+    { url: "https://www.channelnewsasia.com/rssfeed/8395986", region: "Global", language: "en" },
+    { url: "https://www.thejakartapost.com/rss/news", region: "Global", language: "en" },
+    { url: "https://www.rappler.com/feed/", region: "Global", language: "en" },
+    { url: "https://www.bangkokpost.com/rss/data/news.xml", region: "Global", language: "en" },
+    { url: "https://e.vnexpress.net/rss/news.rss", region: "Global", language: "en" },
+
+    // Central Asia / Caucasus
+    { url: "https://eurasianet.org/feed", region: "Global", language: "en" },
+    { url: "https://english.civilnet.am/feed/", region: "Global", language: "en" },
+    { url: "https://agenda.ge/en/feed/rss", region: "Global", language: "en" },
+
+    // Strong Intelligence / Geopolitics Sources
+    { url: "https://foreignpolicy.com/feed/", region: "Global", language: "en" },
+    { url: "https://warontherocks.com/feed/", region: "Global", language: "en" },
+    { url: "https://www.csis.org/analysis/rss", region: "Global", language: "en" },
+    { url: "https://www.brookings.edu/feed/", region: "Global", language: "en" }
   ];
 
   try {
-    const fetchTasks = commonFeeds.map(async (url) => {
+    const fetchTasks = commonFeeds.map(async (feedObj) => {
       try {
-        const feed = await rssParser.parseURL(url);
+        const feed = await rssParser.parseURL(feedObj.url);
         const searchTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
         
         return feed.items
@@ -1440,8 +1820,8 @@ async function searchRSS(query: string) {
             url: res.item.link || "",
             snippet: res.item.contentSnippet || "",
             source: `RSS: ${res.feedTitle || "News Feed"}`,
-            language: "en", 
-            region: "Global",
+            language: feedObj.language, 
+            region: feedObj.region,
             date: res.item.pubDate ? new Date(res.item.pubDate).toISOString() : new Date().toISOString()
           }));
       } catch (e) {

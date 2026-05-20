@@ -18,9 +18,17 @@ interface MultiSelectProps {
   onChange: (selected: string[]) => void;
   className?: string;
   placeholder?: string;
+  enableSelectClearAll?: boolean;
 }
 
-export function MultiSelect({ options, selected, onChange, className, placeholder = 'Select...' }: MultiSelectProps) {
+export function MultiSelect({ 
+  options, 
+  selected, 
+  onChange, 
+  className, 
+  placeholder = 'Select...',
+  enableSelectClearAll = false
+}: MultiSelectProps) {
   const [open, setOpen] = React.useState(false);
 
   const handleSelect = (value: string) => {
@@ -30,6 +38,24 @@ export function MultiSelect({ options, selected, onChange, className, placeholde
         : [...selected, value]
     );
   };
+
+  const handleSelectAll = () => {
+    onChange(options.map((option) => option.value));
+  };
+
+  const handleClearAll = () => {
+    onChange([]);
+  };
+
+  const normalOptions = React.useMemo(() => {
+    if (enableSelectClearAll) {
+      return [...options].sort((a, b) => a.label.localeCompare(b.label));
+    }
+    return options;
+  }, [options, enableSelectClearAll]);
+
+  const showSelectAll = enableSelectClearAll && selected.length < options.length;
+  const showClearAll = enableSelectClearAll && selected.length > 0;
 
   const displayValue = React.useMemo(() => {
     if (selected.length === 0) return placeholder;
@@ -59,11 +85,34 @@ export function MultiSelect({ options, selected, onChange, className, placeholde
           <CommandList>
             <CommandEmpty>No results found.</CommandEmpty>
             <CommandGroup>
-              {options.map((option) => (
+              {showSelectAll && (
+                <CommandItem
+                  key="select-all"
+                  value="Select All"
+                  onSelect={handleSelectAll}
+                  className="font-bold cursor-pointer text-blue-600 hover:text-blue-700 hover:bg-slate-50 border-b border-slate-100"
+                >
+                  <Check className="mr-2 h-4 w-4 opacity-0" />
+                  Select All
+                </CommandItem>
+              )}
+              {showClearAll && (
+                <CommandItem
+                  key="clear-all"
+                  value="Clear All"
+                  onSelect={handleClearAll}
+                  className="font-bold cursor-pointer text-red-650 hover:text-red-700 hover:bg-slate-50 border-b border-slate-100"
+                >
+                  <Check className="mr-2 h-4 w-4 opacity-0" />
+                  Clear All
+                </CommandItem>
+              )}
+              {normalOptions.map((option) => (
                 <CommandItem
                   key={option.value}
                   value={option.label}
                   onSelect={() => handleSelect(option.value)}
+                  className="cursor-pointer"
                 >
                   <Check
                     className={cn(

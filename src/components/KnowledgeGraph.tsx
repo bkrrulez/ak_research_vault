@@ -141,11 +141,11 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ nodes, edges }) 
       .join("circle")
       .attr("r", 12)
       .attr("fill", d => {
-        const type = d.type?.toLowerCase() || "";
-        if (type.includes("person") || type.includes("individual")) return "#fbbf24"; // Amber
-        if (type.includes("org") || type.includes("company") || type.includes("group") || type.includes("party")) return "#6366f1"; // Indigo
-        if (type.includes("tech") || type.includes("concept") || type.includes("event") || type.includes("loc") || type.includes("country") || type.includes("city")) return "#10b981"; // Emerald/Green
-        return "#94a3b8"; // Slate
+        const type = d.type?.toUpperCase() || "";
+        if (type.includes("PERSON") || type.includes("INDIVIDUAL")) return "#fbbf24"; // Amber
+        if (type.includes("ORG") || type.includes("ORGANIZATION") || type.includes("COMPANY") || type.includes("GROUP") || type.includes("TEAM") || type.includes("GOVERNMENT")) return "#6366f1"; // Indigo (ORG)
+        if (type.includes("CONCEPT") || type.includes("TOPIC") || type.includes("LOCATION") || type.includes("CITY") || type.includes("COUNTRY") || type.includes("EVENT") || type.includes("TECH") || type.includes("ENTITY")) return "#10b981"; // Emerald/Green (CONCEPT/LOCATION/FALLBACK)
+        return "#94a3b8"; // Slate (Unknown)
       })
       .attr("stroke", "#fff")
       .attr("stroke-width", 2)

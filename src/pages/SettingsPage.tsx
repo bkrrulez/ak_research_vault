@@ -50,6 +50,7 @@ export default function SettingsPage() {
   const [formData, setFormData] = useState({
     label: "",
     key_value: "",
+    service_name: "tavily"
   });
 
   const [editFormData, setEditFormData] = useState({
@@ -60,7 +61,7 @@ export default function SettingsPage() {
   const loadApiKeys = async () => {
     setIsLoading(true);
     try {
-      const data = await fetchApiKeys();
+      const data = await fetchApiKeys("tavily");
       setApiKeys(data);
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: "Could not load API keys." });
@@ -80,7 +81,7 @@ export default function SettingsPage() {
       toast({ title: "Success", description: "New API Key added successfully." });
       setIsDialogOpen(false);
       loadApiKeys();
-      setFormData({ label: "", key_value: "" });
+      setFormData({ label: "", key_value: "", service_name: "tavily" });
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: err.message });
     }

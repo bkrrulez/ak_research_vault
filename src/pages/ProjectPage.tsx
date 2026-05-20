@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { Search, Link as LinkIcon, Share2, Activity, Database, Zap, Plus, Globe, Filter, List, Trash2, ExternalLink, Loader2, Languages, MoreVertical, LayoutGrid, BrainCircuit, Sparkles, Network } from "lucide-react";
-import { Project, fetchProject, LinkItem, fetchLinks, deleteLink, executeSearch, addLink, updateProject, analyzeText, generateSemanticMap } from "../lib/api";
+import { Search, Link as LinkIcon, Share2, Activity, Database, Zap, Plus, Globe, Filter, List, Trash2, ExternalLink, Loader2, Languages, MoreVertical, LayoutGrid, BrainCircuit, Sparkles, Network, FileText } from "lucide-react";
+import { Project, fetchProject, LinkItem, fetchLinks, deleteLink, executeSearch, addLink, updateProject, analyzeText, generateSemanticMap, generateProjectSummary, fetchProjectSummaries, deleteProjectSummary, ProjectSummary } from "../lib/api";
 import Layout from "../components/Layout";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -28,6 +28,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { MultiSelect } from "@/components/ui/multi-select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
@@ -40,7 +48,7 @@ import {
 
 import { KnowledgeGraph } from "../components/KnowledgeGraph";
 
-type Tab = "search" | "links" | "graph";
+type Tab = "search" | "links" | "graph" | "summary";
 
 const ALL_LANGUAGES = [
   { value: "en", label: "English" },
@@ -56,7 +64,10 @@ const ALL_LANGUAGES = [
   { value: "ru", label: "Russian" },
   { value: "ko", label: "Korean" },
   { value: "tr", label: "Turkish" },
-  { value: "vi", label: "Vietnamese" }
+  { value: "vi", label: "Vietnamese" },
+  { value: "it", label: "Italian" },
+  { value: "sq", label: "Albanian" },
+  { value: "sh", label: "Bosnian, Croatian & Serbian" }
 ];
 
 const ALL_REGIONS = [
@@ -72,7 +83,8 @@ const ALL_REGIONS = [
   { value: "JP", label: "Japan" },
   { value: "BR", label: "Brazil" },
   { value: "CA", label: "Canada" },
-  { value: "AU", label: "Australia" }
+  { value: "AU", label: "Australia" },
+  { value: "RU", label: "Russia" }
 ];
 
 export default function ProjectPage() {
@@ -96,6 +108,40 @@ export default function ProjectPage() {
   const [analyzingResults, setAnalyzingResults] = useState<Record<string, { loading: boolean, text: string }>>({});
   const [isAnalyzingSemantic, setIsAnalyzingSemantic] = useState(false);
   const [semanticData, setSemanticData] = useState<{ nodes: any[], edges: any[] } | null>(null);
+
+  // Summary generation states
+  const [wordCountOption, setWordCountOption] = useState<string>("300");
+  const [customWordCount, setCustomWordCount] = useState<string>("300");
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState<boolean>(false);
+  const [summaryData, setSummaryData] = useState<{ id?: string; heading: string; body: string; wordCountTarget: number; generatedAt: string; rawText?: string } | null>(null);
+  const [historicalSummaries, setHistoricalSummaries] = useState<ProjectSummary[]>([]);
+  const [selectedSummaryId, setSelectedSummaryId] = useState<string>("");
+  const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
+
+  // Manual entry state
+  const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
+  const [manualUrl, setManualUrl] = useState("");
+  const [isVerifyingLink, setIsVerifyingLink] = useState(false);
+  const [synthesisTimer, setSynthesisTimer] = useState(0);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isAnalyzingSemantic) {
+      setSynthesisTimer(0);
+      interval = setInterval(() => {
+        setSynthesisTimer(prev => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isAnalyzingSemantic]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const handleAnalyzeSemanticMap = async () => {
     if (!links || links.length === 0) {
@@ -139,6 +185,135 @@ export default function ProjectPage() {
     }
   };
 
+  const handleGenerateSummary = async () => {
+    if (!id || !project) return;
+    if (links.length === 0) {
+      toast({
+        title: "Intelligence Vault Empty",
+        description: "Please add some research pieces to your Intelligence Vault first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let targetCount = 300;
+    if (wordCountOption === "Custom") {
+      const parsed = parseInt(customWordCount, 10);
+      if (isNaN(parsed) || parsed < 50 || parsed > 1500) {
+        toast({
+          title: "Invalid Word Count",
+          description: "Custom word count must be a number between 50 and 1500 inclusive.",
+          variant: "destructive",
+        });
+        return;
+      }
+      targetCount = parsed;
+    } else {
+      targetCount = parseInt(wordCountOption, 10);
+    }
+
+    try {
+      setIsGeneratingSummary(true);
+      const result = await generateProjectSummary(id, links, project.query || project.name, targetCount);
+      setSummaryData(result);
+      
+      // Update local project settings to match what backend saved
+      const updatedSettings = {
+        ...(project.settings || {}),
+        summary: result
+      };
+      setProject({
+        ...project,
+        settings: updatedSettings
+      });
+
+      // Refetch historical listings
+      try {
+        const summaries = await fetchProjectSummaries(id);
+        setHistoricalSummaries(summaries);
+        if (result.id) {
+          setSelectedSummaryId(result.id);
+        } else if (summaries && summaries.length > 0) {
+          setSelectedSummaryId(summaries[0].id);
+        }
+      } catch (sumErr) {
+        console.error("Failed to refresh historical list:", sumErr);
+      }
+
+      toast({
+        title: "Summary Generated",
+        description: `Successfully synthesized a ${targetCount}-word briefing summary.`,
+      });
+    } catch (err: any) {
+      console.error("Summary generation error:", err);
+      toast({
+        title: "Generation Failed",
+        description: err.message || "An unexpected error occurred during summarization.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
+
+  const handleSelectSummary = (summaryId: string) => {
+    setSelectedSummaryId(summaryId);
+    if (!summaryId) {
+      setSummaryData(null);
+      return;
+    }
+    const found = historicalSummaries.find(s => s.id === summaryId);
+    if (found) {
+      setSummaryData({
+        id: found.id,
+        heading: found.heading,
+        body: found.body,
+        wordCountTarget: found.word_count,
+        generatedAt: found.created_at,
+        rawText: found.raw_text
+      });
+    }
+  };
+
+  const handleDeleteSummary = async (summaryId: string) => {
+    if (!id) return;
+    try {
+      await deleteProjectSummary(id, summaryId);
+      toast({
+        title: "Summary Deleted",
+        description: "The summary has been removed from history.",
+      });
+      
+      const updatedList = historicalSummaries.filter(s => s.id !== summaryId);
+      setHistoricalSummaries(updatedList);
+      
+      // If we deleted the currently selected summary, shift to the next or null
+      if (selectedSummaryId === summaryId) {
+        if (updatedList.length > 0) {
+          const nextLatest = updatedList[0];
+          setSummaryData({
+            id: nextLatest.id,
+            heading: nextLatest.heading,
+            body: nextLatest.body,
+            wordCountTarget: nextLatest.word_count,
+            generatedAt: nextLatest.created_at,
+            rawText: nextLatest.raw_text
+          });
+          setSelectedSummaryId(nextLatest.id);
+        } else {
+          setSummaryData(null);
+          setSelectedSummaryId("");
+        }
+      }
+    } catch (err: any) {
+      toast({
+        title: "Delete Failed",
+        description: err.message || "Failed to remove the summary.",
+        variant: "destructive"
+      });
+    }
+  };
+
   const handleAnalyzeResult = async (result: any) => {
     setAnalyzingResults(prev => ({ ...prev, [result.url]: { loading: true, text: "" } }));
     try {
@@ -166,13 +341,14 @@ export default function ProjectPage() {
     "zh": "Chinese", "ja": "Japanese", "it": "Italian", "pt": "Portuguese",
     "ru": "Russian", "ko": "Korean", "he": "Hebrew", "ur": "Urdu",
     "ar": "Arabic", "hi": "Hindi", "tr": "Turkish", "vi": "Vietnamese",
-    "pl": "Polish", "nl": "Dutch", "id": "Indonesian"
+    "pl": "Polish", "nl": "Dutch", "id": "Indonesian",
+    "sq": "Albanian", "sh": "Bosnian, Croatian & Serbian"
   };
 
   const regionNameMap: Record<string, string> = {
     "Global": "Global", "US": "USA", "GB": "UK", "IN": "India", "CA": "Canada", 
     "AU": "Australia", "IL": "Israel", "PK": "Pakistan", "FR": "France",
-    "DE": "Germany", "CN": "China", "JP": "Japan", "BR": "Brazil"
+    "DE": "Germany", "CN": "China", "JP": "Japan", "BR": "Brazil", "RU": "Russia"
   };
 
   useEffect(() => {
@@ -253,6 +429,45 @@ export default function ProjectPage() {
       } else {
         setSemanticData(null);
       }
+
+      // Load historical summaries
+      try {
+        const summaries = await fetchProjectSummaries(id);
+        setHistoricalSummaries(summaries);
+        if (summaries && summaries.length > 0) {
+          const latest = summaries[0];
+          setSummaryData({
+            id: latest.id,
+            heading: latest.heading,
+            body: latest.body,
+            wordCountTarget: latest.word_count,
+            generatedAt: latest.created_at,
+            rawText: latest.raw_text
+          });
+          setSelectedSummaryId(latest.id);
+        } else {
+          // Fallback to loadedSummary from settings if any, otherwise null
+          const loadedSummary = pData.settings?.summary || null;
+          if (loadedSummary) {
+            setSummaryData(loadedSummary);
+            setSelectedSummaryId(loadedSummary.id || "latest");
+          } else {
+            setSummaryData(null);
+            setSelectedSummaryId("");
+          }
+        }
+      } catch (sumErr) {
+        console.error("Failed to load historical summaries:", sumErr);
+        // Fallback to loadedSummary from settings if any, otherwise null
+        const loadedSummary = pData.settings?.summary || null;
+        if (loadedSummary) {
+          setSummaryData(loadedSummary);
+          setSelectedSummaryId(loadedSummary.id || "latest");
+        } else {
+          setSummaryData(null);
+          setSelectedSummaryId("");
+        }
+      }
     } catch (err) {
       console.error("Failed to load project data", err);
     } finally {
@@ -329,6 +544,56 @@ export default function ProjectPage() {
     }
   }
 
+  async function handleManualEntry() {
+    if (!id) return;
+    if (!manualUrl) {
+      toast({ title: "Verification Error", description: "Please enter a valid URL.", variant: "destructive" });
+      return;
+    }
+
+    // Basic URL validation
+    try {
+      new URL(manualUrl.startsWith('http') ? manualUrl : `https://${manualUrl}`);
+    } catch (e) {
+      toast({ title: "Invalid URL", description: "The provided link is not a valid URL structure.", variant: "destructive" });
+      return;
+    }
+
+    const formattedUrl = manualUrl.startsWith('http') ? manualUrl : `https://${manualUrl}`;
+
+    setIsVerifyingLink(true);
+    try {
+      // Step 1: Search for the URL on the web to "verify and get metadata"
+      const results = await executeSearch(formattedUrl, {
+        sources: ["Web Search"],
+        regions: ["Global"],
+        languages: ["en"]
+      });
+
+      // Step 2: Try to find a good result. If search results exist, use info from them.
+      // If not, we still allow adding it as the user provided a valid URL.
+      const foundResult = results.find(r => r.url.includes(formattedUrl) || formattedUrl.includes(r.url)) || results[0];
+
+      if (foundResult) {
+        await handleAddLink(foundResult);
+      } else {
+        await handleAddLink({
+          url: formattedUrl,
+          title: "Manual Reference",
+          snippet: "This source was added manually via the Intelligence Vault interface.",
+          source: "Manual Entry"
+        });
+      }
+      
+      setManualUrl("");
+      setIsManualEntryOpen(false);
+    } catch (err: any) {
+      toast({ title: "Verification Failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsVerifyingLink(false);
+    }
+  }
+
   async function handleDelete(linkId: number) {
     try {
       await deleteLink(linkId.toString());
@@ -381,8 +646,8 @@ export default function ProjectPage() {
           <div className="flex flex-wrap gap-3 items-center">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Filter:</span>
-              <MultiSelect className="h-9 min-w-32 max-w-[150px] bg-slate-50 text-[10px] uppercase font-bold" options={ALL_REGIONS} selected={regions} onChange={setRegions} placeholder="Regions" />
-              <MultiSelect className="h-9 min-w-32 max-w-[180px] bg-slate-50 text-[10px] uppercase font-bold" options={ALL_LANGUAGES} selected={languages} onChange={setLanguages} placeholder="Languages" />
+              <MultiSelect className="h-9 min-w-32 max-w-[150px] bg-slate-50 text-[10px] uppercase font-bold" options={ALL_REGIONS} selected={regions} onChange={setRegions} placeholder="Regions" enableSelectClearAll={true} />
+              <MultiSelect className="h-9 min-w-32 max-w-[180px] bg-slate-50 text-[10px] uppercase font-bold" options={ALL_LANGUAGES} selected={languages} onChange={setLanguages} placeholder="Languages" enableSelectClearAll={true} />
               <MultiSelect className="h-9 min-w-32 max-w-[150px] bg-slate-50 text-[10px] uppercase font-bold" options={sourceOptions} selected={sources} onChange={setSources} placeholder="Sources" />
             </div>
             
@@ -474,8 +739,13 @@ export default function ProjectPage() {
                           {result.source}
                         </Badge>
                         <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest text-slate-500 border-slate-200">
-                          {result.language?.toUpperCase()}
+                          Language: {result.language?.toUpperCase()}
                         </Badge>
+                        {result.region && (
+                          <Badge variant="outline" className="text-[9px] font-black uppercase tracking-widest text-slate-500 border-slate-200">
+                            Region: {result.region?.toUpperCase()}
+                          </Badge>
+                        )}
                         {isAlreadyAdded && (
                           <Badge variant="secondary" className="text-[9px] font-black uppercase tracking-widest bg-green-50 text-green-700 border-none">
                             Stored in Vault
@@ -544,9 +814,54 @@ export default function ProjectPage() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Intelligence Repository ({links.length})</h3>
-        <Button variant="outline" size="sm" className="h-9 gap-2 text-[10px] font-bold uppercase tracking-wider">
-          <Plus className="w-3.5 h-3.5" /> Manual Entry
-        </Button>
+        
+        <Dialog open={isManualEntryOpen} onOpenChange={setIsManualEntryOpen}>
+          <DialogTrigger asChild>
+            <Button variant="outline" size="sm" className="h-9 gap-2 text-[10px] font-bold uppercase tracking-wider">
+              <Plus className="w-3.5 h-3.5" /> Manual Entry
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[500px] rounded-[2.5rem] p-0 overflow-hidden border-8 border-slate-50 shadow-2xl">
+            <DialogHeader className="p-8 pb-4 bg-slate-50/50">
+              <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary mb-4 shadow-inner">
+                <Globe className="w-6 h-6" />
+              </div>
+              <DialogTitle className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Direct Intelligence Import</DialogTitle>
+              <DialogDescription className="text-slate-500 font-medium">
+                Paste a verified URL to ingest it into your project vault. We'll synchronize metadata automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="p-8 pt-4 space-y-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest px-1">Source URL</label>
+                <Input 
+                  placeholder="https://example.com/insight-report" 
+                  value={manualUrl}
+                  onChange={(e) => setManualUrl(e.target.value)}
+                  className="h-14 bg-slate-50 border-slate-200 rounded-2xl focus:ring-primary/20 text-sm font-medium"
+                />
+              </div>
+              
+              <div className="flex gap-3">
+                <Button 
+                  variant="ghost" 
+                  onClick={() => setIsManualEntryOpen(false)}
+                  className="flex-1 h-14 rounded-2xl font-bold uppercase tracking-widest text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleManualEntry}
+                  disabled={isVerifyingLink || !manualUrl}
+                  className="flex-[2] h-14 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-black uppercase tracking-[0.2em] shadow-xl shadow-slate-200 transition-all active:scale-[0.98] gap-3"
+                >
+                  {isVerifyingLink ? <Loader2 className="w-5 h-5 animate-spin" /> : <Database className="w-5 h-5" />}
+                  {isVerifyingLink ? "Verifying..." : "Verify & Import"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="space-y-4">
@@ -648,8 +963,11 @@ export default function ProjectPage() {
       {isAnalyzingSemantic ? (
         <div className="py-32 flex flex-col items-center gap-6 text-center">
           <div className="relative">
-            <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center border-8 border-primary/5 shadow-inner">
+            <div className="w-32 h-32 bg-white rounded-full flex flex-col items-center justify-center border-8 border-primary/5 shadow-inner">
               <BrainCircuit className="w-12 h-12 text-primary" />
+              <div className="mt-1 font-mono text-[10px] font-black text-primary/60 tabular-nums uppercase tracking-widest">
+                {formatTime(synthesisTimer)}
+              </div>
             </div>
             <div className="absolute -inset-6 border-2 border-primary/20 rounded-full animate-[spin_8s_linear_infinite]" />
             <div className="absolute -inset-2 border-b-2 border-primary rounded-full animate-[spin_3s_ease-in-out_infinite]" />
@@ -772,6 +1090,174 @@ export default function ProjectPage() {
     </div>
   );
 
+  const renderSummaryTab = () => (
+    <div className="space-y-8 pb-20 animate-in fade-in slide-in-from-bottom-2 duration-500 w-full">
+      {/* Top row with Word Count field & Generate Summary button */}
+      <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm">
+        <CardContent className="p-6">
+          <div className="flex flex-wrap items-center justify-between gap-6">
+            <div className="flex items-center gap-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Word Count Target</span>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={wordCountOption}
+                    onChange={(e) => setWordCountOption(e.target.value)}
+                    className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-primary/10 cursor-pointer min-w-[150px] shadow-sm transition-all"
+                  >
+                    <option value="100">100 Words</option>
+                    <option value="200">200 Words</option>
+                    <option value="300">300 Words</option>
+                    <option value="400">400 Words</option>
+                    <option value="500">500 Words</option>
+                    <option value="Custom">Custom</option>
+                  </select>
+
+                  {wordCountOption === "Custom" && (
+                    <div className="animate-in fade-in zoom-in-95 duration-200">
+                      <Input
+                        type="number"
+                        value={customWordCount}
+                        onChange={(e) => setCustomWordCount(e.target.value)}
+                        placeholder="50-1500"
+                        min={50}
+                        max={1500}
+                        className="h-10 w-32 border-slate-200 rounded-xl px-4 text-xs font-bold text-slate-700 bg-white shadow-sm focus-visible:ring-primary/10"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <Button 
+              onClick={handleGenerateSummary}
+              disabled={isGeneratingSummary || links.length === 0}
+              className="px-8 h-12 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/90 transition-all shadow-xl shadow-primary/10 gap-2 min-w-[200px]"
+            >
+              {isGeneratingSummary ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Synthesizing...
+                </>
+              ) : (
+                <>
+                  <BrainCircuit className="w-4 h-4" />
+                  Generate Summary
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 2nd row: Historic records selection dropdown */}
+      {historicalSummaries.length > 0 && (
+        <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <CardContent className="p-6">
+            <div className="flex flex-wrap items-center justify-between gap-6">
+              <div className="flex items-center gap-4 flex-1 min-w-[280px]">
+                <div className="flex flex-col gap-1.5 w-full">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                    Select Compiled Briefing From History ({historicalSummaries.length})
+                  </span>
+                  <select
+                    value={selectedSummaryId}
+                    onChange={(e) => handleSelectSummary(e.target.value)}
+                    className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/10 cursor-pointer w-full shadow-sm transition-all"
+                  >
+                    {historicalSummaries.map((sum) => (
+                      <option key={sum.id} value={sum.id}>
+                        [{new Date(sum.created_at).toLocaleDateString()}] {sum.heading.slice(0, 80)}{sum.heading.length > 80 ? "..." : ""} ({sum.word_count} words)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {selectedSummaryId && (
+                <Button
+                  onClick={() => handleDeleteSummary(selectedSummaryId)}
+                  variant="outline"
+                  className="h-10 px-6 text-red-500 hover:text-red-600 hover:bg-red-50/50 border-red-100 rounded-xl text-xs font-bold uppercase tracking-widest gap-2 transition-all md:self-end"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete This Record
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Summary output content block */}
+      {isGeneratingSummary ? (
+        <div className="py-24 flex flex-col items-center justify-center bg-white rounded-3xl border border-slate-100 shadow-sm">
+          <div className="relative mb-6">
+            <Activity className="w-12 h-12 text-blue-500 animate-pulse" />
+            <BrainCircuit className="w-6 h-6 text-primary absolute inset-0 m-auto animate-spin" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-800 mb-1">Synthesizing Briefing Package</h3>
+          <p className="text-sm text-slate-400 max-w-sm text-center">
+            Analyzing and structuring {links.length} intelligence items into a custom cohesive report...
+          </p>
+        </div>
+      ) : summaryData ? (
+        <Card className="rounded-3xl border-slate-200 shadow-xl overflow-hidden bg-white w-full">
+          <CardHeader className="p-8 border-b border-slate-100 bg-slate-50/50">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
+              <Badge variant="secondary" className="bg-primary/5 text-primary font-bold tracking-widest uppercase text-[10px] px-3 py-1">
+                EXECUTIVE INTELLIGENCE BRIEFING
+              </Badge>
+              <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
+                Generated {new Date(summaryData.generatedAt).toLocaleString()} • Target: {summaryData.wordCountTarget} words
+              </span>
+            </div>
+            <CardTitle className="text-3xl font-black text-slate-900 tracking-tight leading-tight mt-3">
+              {summaryData.heading}
+            </CardTitle>
+          </CardHeader>
+          
+          <CardContent className="p-8 md:p-12 space-y-6 text-slate-700 text-sm md:text-base leading-relaxed font-sans max-w-none prose prose-slate">
+            {summaryData.body.split('\n\n').map((paragraph, index) => {
+              if (!paragraph.trim()) return null;
+              
+              return (
+                <p key={index} className="whitespace-pre-wrap">
+                  {paragraph.split(/(\*\*.*?\*\*)/g).map((part, pIdx) => {
+                    if (part.startsWith('**') && part.endsWith('**')) {
+                      return <strong key={pIdx} className="font-extrabold text-slate-900">{part.slice(2, -2)}</strong>;
+                    }
+                    return part;
+                  })}
+                </p>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="py-32 flex flex-col items-center text-center bg-white rounded-3xl border border-dashed border-slate-200">
+          <div className="w-20 h-20 bg-white border border-dashed border-slate-200 rounded-full flex items-center justify-center mb-6 shadow-sm">
+            <FileText className="w-8 h-8 text-slate-300 animate-pulse" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-700 mb-2">Executive Summarization</h3>
+          <p className="text-sm text-slate-400 max-w-md mb-8">
+            Synthesize {links.length} items from your Intelligence Vault into an executive report customized to your choice of length.
+          </p>
+          <Button 
+            onClick={handleGenerateSummary}
+            disabled={links.length === 0 || isGeneratingSummary}
+            variant="outline"
+            className="h-11 px-8 rounded-xl border-2 border-slate-200 font-bold uppercase tracking-widest text-xs hover:bg-slate-50 transition-all gap-2"
+          >
+            <Sparkles className="w-4 h-4 text-primary" />
+            Analyze Vault Content
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <Layout 
       activeProjectId={id} 
@@ -803,12 +1289,19 @@ export default function ProjectPage() {
                 <Share2 className="w-3.5 h-3.5" />
                 Semantic Map
               </TabsTrigger>
+              <TabsTrigger 
+                value="summary" 
+                className="py-4 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none text-xs font-bold uppercase tracking-widest gap-2"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Summary
+              </TabsTrigger>
             </TabsList>
           </div>
 
           <div className="flex-1 overflow-hidden relative">
             <ScrollArea className="h-full">
-              <div className={`p-8 ${activeTab === 'graph' ? 'max-w-[95%]' : 'max-w-6xl'} mx-auto min-h-full transition-all duration-500`}>
+              <div className="p-8 max-w-[95%] mx-auto min-h-full transition-all duration-500">
                 {isLoading ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-slate-50/50 backdrop-blur-[1px] z-10">
                     <div className="flex flex-col items-center gap-4">
@@ -826,6 +1319,9 @@ export default function ProjectPage() {
                     </TabsContent>
                     <TabsContent value="graph" className="m-0 mt-0 focus-visible:ring-0">
                       {renderGraphTab()}
+                    </TabsContent>
+                    <TabsContent value="summary" className="m-0 mt-0 focus-visible:ring-0">
+                      {renderSummaryTab()}
                     </TabsContent>
                   </>
                 )}

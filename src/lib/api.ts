@@ -262,6 +262,41 @@ export async function generateSemanticMap(items: any[], query: string, projectId
   return handleResponse(response, "generate semantic map");
 }
 
+export interface ProjectSummary {
+  id: string;
+  project_id: string;
+  heading: string;
+  body: string;
+  word_count: number;
+  raw_text?: string;
+  created_at: string;
+}
+
+export async function fetchProjectSummaries(projectId: string): Promise<ProjectSummary[]> {
+  const response = await fetchWithTimeout(`/api/projects/${projectId}/summaries`, {
+    method: "GET",
+    headers: getAuthHeaders(),
+  });
+  return handleResponse(response, "fetch project summaries");
+}
+
+export async function deleteProjectSummary(projectId: string, summaryId: string): Promise<{ success: boolean }> {
+  const response = await fetchWithTimeout(`/api/projects/${projectId}/summaries/${summaryId}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+  return handleResponse(response, "delete project summary");
+}
+
+export async function generateProjectSummary(projectId: string, items: any[], query: string, wordCount: number): Promise<{ id?: string; heading: string; body: string; rawText: string; wordCountTarget: number; generatedAt: string }> {
+  const response = await fetchWithTimeout("/api/llm/summarize", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ projectId, items, query, wordCount }),
+  });
+  return handleResponse(response, "generate summary");
+}
+
 export async function updateApiKey(id: string, key: { key_value?: string; label?: string }): Promise<ApiKey> {
   const response = await fetchWithTimeout(`/api/keys/${id}`, {
     method: "PUT",
@@ -300,4 +335,18 @@ export async function deleteVaultUser(id: string): Promise<void> {
     headers: getAuthHeaders(),
   });
   return handleResponse(response, "delete user");
+}
+
+export async function fetchProfile(): Promise<VaultUser> {
+  const response = await fetchWithTimeout("/api/profile", { headers: getAuthHeaders() });
+  return handleResponse(response, "fetch profile");
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+  const response = await fetchWithTimeout("/api/profile/change-password", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  return handleResponse(response, "change password");
 }

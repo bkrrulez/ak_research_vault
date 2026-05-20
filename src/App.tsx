@@ -6,6 +6,8 @@ import SettingsPage from "./pages/SettingsPage.tsx";
 import LlmManagementPage from "./pages/LlmManagementPage.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import MembersPage from "./pages/MembersPage.tsx";
+import ProfilePage from "./pages/ProfilePage.tsx";
+import SupportPage from "./pages/SupportPage.tsx";
 import { Toaster } from "@/components/ui/toaster";
 import { AuthProvider, useAuth } from "@/lib/auth";
 
@@ -53,6 +55,18 @@ export default function App() {
           <Route path="/members" element={
             <ProtectedRoute adminOnly>
               <MembersPage />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/profile" element={
+            <ProtectedRoute>
+              <ProfilePage />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/support" element={
+            <ProtectedRoute>
+              <SupportPage />
             </ProtectedRoute>
           } />
           

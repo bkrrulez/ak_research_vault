@@ -281,21 +281,8 @@ export default function Layout({ children, activeProjectId, projectName, project
           </AnimatePresence>
         </div>
 
-        <div className="p-4 border-t border-slate-100 mt-2 bg-white">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="w-full flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer group border border-slate-100 shadow-sm">
-                <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-[11px] text-primary font-black shadow-sm transition-all group-hover:bg-primary group-hover:text-white">
-                  {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('') : "BE"}
-                </div>
-                <div className="text-left flex-1 overflow-hidden">
-                  <p className="text-xs font-black text-slate-900 truncate uppercase tracking-tighter leading-tight">{user?.full_name || "Guest"}</p>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest leading-none mt-0.5">{user?.role || "Researcher"}</p>
-                </div>
-                <LogOut className="w-4 h-4 text-slate-300 group-hover:text-red-500 transition-colors" onClick={(e) => { e.stopPropagation(); handleLogout(); }} />
-              </button>
-            </DropdownMenuTrigger>
-          </DropdownMenu>
+        <div className="p-4 border-t border-slate-100 mt-2 bg-white flex items-center justify-center">
+            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest italic">Research Terminal 1.0</span>
         </div>
       </aside>
 
@@ -320,21 +307,66 @@ export default function Layout({ children, activeProjectId, projectName, project
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3 mr-4 pr-4 border-r border-slate-200">
+            <div className="flex items-center gap-3 border-r border-slate-200 pr-4">
+              {location.pathname !== "/" && activeProjectId && !isSettingsPath && !isMembersPath && (
+                <Button 
+                  variant="outline"
+                  onClick={(e) => handleDeleteProject(activeProjectId, projectName || "this project", e)}
+                  className="h-10 px-6 text-[10px] font-bold uppercase tracking-widest border-slate-200 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-100 gap-2 shadow-sm rounded-xl transition-all"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete Project
+                </Button>
+              )}
               <button className="h-10 w-10 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-slate-100 transition-all cursor-pointer">
                 <Bell size={20} />
               </button>
             </div>
-            {location.pathname !== "/" && activeProjectId && !isSettingsPath && !isMembersPath && (
-              <Button 
-                variant="outline"
-                onClick={(e) => handleDeleteProject(activeProjectId, projectName || "this project", e)}
-                className="h-10 px-6 text-[10px] font-bold uppercase tracking-widest border-slate-200 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-100 gap-2 shadow-sm rounded-xl"
-              >
-                <Trash2 className="w-4 h-4" />
-                Archive
-              </Button>
-            )}
+            
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-3 pl-2 pr-1 py-1 rounded-2xl hover:bg-slate-50 transition-all cursor-pointer group">
+                  <div className="w-10 h-10 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-[11px] text-primary font-black shadow-sm transition-all group-hover:bg-primary group-hover:text-white overflow-hidden uppercase">
+                    {user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('') : "BE"}
+                  </div>
+                  <div className="text-left hidden md:block">
+                    <p className="text-sm font-bold text-slate-900 leading-tight flex items-center gap-2">
+                      {user?.full_name || "Guest Account"}
+                    </p>
+                    <p className="text-[10px] font-medium text-slate-400 leading-none">{user?.role || "Researcher"}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 rotate-90 ml-1" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56 p-2 rounded-2xl shadow-xl border-slate-100">
+                <DropdownMenuLabel className="px-3 py-3 text-sm font-black text-slate-900 uppercase tracking-widest bg-slate-50/50 rounded-xl mb-1">
+                  My Account
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator className="bg-slate-100" />
+                <DropdownMenuItem 
+                  onClick={() => navigate("/profile")}
+                  className="px-3 py-3 rounded-xl cursor-pointer hover:bg-slate-50 text-slate-600 font-bold uppercase tracking-widest text-[10px] gap-3"
+                >
+                  <User className="w-4 h-4 text-slate-400" />
+                  Profile
+                </DropdownMenuItem>
+                <DropdownMenuItem 
+                  onClick={() => navigate("/support")}
+                  className="px-3 py-3 rounded-xl cursor-pointer hover:bg-slate-50 text-slate-600 font-bold uppercase tracking-widest text-[10px] gap-3"
+                >
+                  <Activity className="w-4 h-4 text-slate-400" />
+                  Support
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-slate-100" />
+                <DropdownMenuItem 
+                  onClick={handleLogout}
+                  className="px-3 py-3 rounded-xl cursor-pointer hover:bg-red-50 text-red-600 font-bold uppercase tracking-widest text-[10px] gap-3"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
@@ -421,12 +453,12 @@ export default function Layout({ children, activeProjectId, projectName, project
           </div>
           <DialogHeader className="space-y-4">
             <DialogTitle className="text-2xl font-black text-center text-slate-900 uppercase tracking-tighter">
-              {deleteSuccess ? "Success" : "Archive Stream"}
+              {deleteSuccess ? "Success" : "Delete Project"}
             </DialogTitle>
             <DialogDescription className="text-center font-medium text-slate-500 leading-relaxed">
               {deleteSuccess 
-                ? `Research stream successfully archived.`
-                : <>Are you sure you want to archive <span className="font-black text-slate-900 italic">"{projectToDelete?.name}"</span>? This will remove all associated data mapping.</>
+                ? `Research project successfully deleted.`
+                : <>Are you sure you want to delete <span className="font-black text-slate-900 italic">"{projectToDelete?.name}"</span>? This will permanently remove all associated data mapping and intelligence summaries.</>
               }
             </DialogDescription>
           </DialogHeader>
@@ -447,7 +479,7 @@ export default function Layout({ children, activeProjectId, projectName, project
                 disabled={isLoading}
                 className="flex-1 uppercase tracking-widest text-[11px] font-black h-12 shadow-xl shadow-red-200 rounded-xl"
               >
-                {isLoading ? "Archiving..." : "Archive"}
+                {isLoading ? "Deleting..." : "Delete"}
               </Button>
             </DialogFooter>
           )}
