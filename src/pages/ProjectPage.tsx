@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { Search, Link as LinkIcon, Share2, Activity, Database, Zap, Plus, Globe, Filter, List, Trash2, ExternalLink, Loader2, Languages, MoreVertical, LayoutGrid, BrainCircuit, Sparkles, Network, FileText } from "lucide-react";
-import { Project, fetchProject, LinkItem, fetchLinks, deleteLink, executeSearch, addLink, updateProject, analyzeText, generateSemanticMap, generateProjectSummary, fetchProjectSummaries, deleteProjectSummary, ProjectSummary } from "../lib/api";
+import { Project, fetchProject, LinkItem, fetchLinks, deleteLink, executeSearch, addLink, updateProject, analyzeText, generateSemanticMap, generateProjectSummary, fetchProjectSummaries, deleteProjectSummary, ProjectSummary, fetchProjectSemanticMaps, deleteProjectSemanticMap, ProjectSemanticMap } from "../lib/api";
 import Layout from "../components/Layout";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -47,6 +47,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 import { KnowledgeGraph } from "../components/KnowledgeGraph";
+
+const getSimplifiedModelName = (modelId?: string): string => {
+  if (!modelId) return "";
+  const parts = modelId.split("/");
+  return parts[parts.length - 1];
+};
 
 type Tab = "search" | "links" | "graph" | "summary";
 
@@ -117,6 +123,8 @@ export default function ProjectPage() {
   const [historicalSummaries, setHistoricalSummaries] = useState<ProjectSummary[]>([]);
   const [selectedSummaryId, setSelectedSummaryId] = useState<string>("");
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
+  const [historicalSemanticMaps, setHistoricalSemanticMaps] = useState<ProjectSemanticMap[]>([]);
+  const [selectedSemanticMapId, setSelectedSemanticMapId] = useState<string>("");
 
   // Manual entry state
   const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
@@ -167,7 +175,21 @@ export default function ProjectPage() {
         nodes: newNodes,
         edges: newEdges
       });
+      
+      // Also update the local project.semantic_map state so that the Active Map description and timestamp are completely in sync
+      setProject(prev => prev ? { ...prev, semantic_map: data } : null);
+
       setActiveTab("graph");
+
+      // Reload historical list so the dropdown shows the newly generated map
+      try {
+        const maps = await fetchProjectSemanticMaps(id);
+        setHistoricalSemanticMaps(maps);
+        setSelectedSemanticMapId("latest");
+      } catch (mapErr) {
+        console.error("Failed to refresh semantic maps list:", mapErr);
+      }
+
       toast({ title: "Map Generated", description: "Semantic relationships extracted successfully." });
     } catch (err: any) {
       console.error("Semantic analysis error:", err);
@@ -314,6 +336,102 @@ export default function ProjectPage() {
     }
   };
 
+  const handleSelectSemanticMap = (mapId: string) => {
+    setSelectedSemanticMapId(mapId);
+    if (!mapId) {
+      setSemanticData(null);
+      return;
+    }
+    if (mapId === "latest") {
+      if (project?.semantic_map) {
+        setSemanticData({
+          nodes: Array.isArray(project.semantic_map.nodes) ? project.semantic_map.nodes : [],
+          edges: Array.isArray(project.semantic_map.edges) ? project.semantic_map.edges : []
+        });
+      } else {
+        setSemanticData(null);
+      }
+      return;
+    }
+    const found = historicalSemanticMaps.find(m => m.id === mapId);
+    if (found) {
+      setSemanticData({
+        nodes: Array.isArray(found.semantic_map.nodes) ? found.semantic_map.nodes : [],
+        edges: Array.isArray(found.semantic_map.edges) ? found.semantic_map.edges : []
+      });
+    }
+  };
+
+  const handleDeleteSemanticMap = async (mapId: string) => {
+    if (!id) return;
+    try {
+      if (mapId === "latest") {
+        const activeMapId = (project?.semantic_map as any)?.id;
+        
+        // 1. Clear from projects table
+        await updateProject(id, { semantic_map: {} });
+        setProject(prev => prev ? { ...prev, semantic_map: {} } : null);
+        setSemanticData(null);
+        setSelectedSemanticMapId("");
+
+        // 2. Also delete from history if there was an associated ID
+        if (activeMapId) {
+          try {
+            await deleteProjectSemanticMap(id, activeMapId);
+            setHistoricalSemanticMaps(prev => prev.filter(m => m.id !== activeMapId));
+          } catch (historyErr) {
+            console.warn("Failed to delete matching active map from history table:", historyErr);
+          }
+        }
+
+        toast({
+          title: "Active Map Cleared",
+          description: "The active semantic map has been cleared and purged from history.",
+        });
+        return;
+      }
+
+      // If we are deleting a historical map specifically
+      await deleteProjectSemanticMap(id, mapId);
+      
+      // If the historical map we are deleting is currently cached as the active map, clear it too!
+      const activeMapId = (project?.semantic_map as any)?.id;
+      if (activeMapId === mapId) {
+        await updateProject(id, { semantic_map: {} });
+        setProject(prev => prev ? { ...prev, semantic_map: {} } : null);
+      }
+
+      toast({
+        title: "Semantic Map Deleted",
+        description: "The semantic map has been removed from history and live cache.",
+      });
+      
+      const updatedList = historicalSemanticMaps.filter(m => m.id !== mapId);
+      setHistoricalSemanticMaps(updatedList);
+      
+      // If we deleted the currently selected semantic map, shift to the next or null
+      if (selectedSemanticMapId === mapId) {
+        if (updatedList.length > 0) {
+          const nextLatest = updatedList[0];
+          setSemanticData({
+            nodes: Array.isArray(nextLatest.semantic_map.nodes) ? nextLatest.semantic_map.nodes : [],
+            edges: Array.isArray(nextLatest.semantic_map.edges) ? nextLatest.semantic_map.edges : []
+          });
+          setSelectedSemanticMapId(nextLatest.id);
+        } else {
+          setSemanticData(null);
+          setSelectedSemanticMapId("");
+        }
+      }
+    } catch (err: any) {
+      toast({
+        title: "Delete Failed",
+        description: err.message || "Failed to remove the semantic map.",
+        variant: "destructive"
+      });
+    }
+  };
+
   const handleAnalyzeResult = async (result: any) => {
     setAnalyzingResults(prev => ({ ...prev, [result.url]: { loading: true, text: "" } }));
     try {
@@ -420,14 +538,40 @@ export default function ProjectPage() {
       setProject(pData);
       setLinks(lData);
       
-      // Load semantic map if it exists
-      if (pData.semantic_map && typeof pData.semantic_map === 'object' && Object.keys(pData.semantic_map).length > 0) {
-        setSemanticData({
-          nodes: Array.isArray(pData.semantic_map.nodes) ? pData.semantic_map.nodes : [],
-          edges: Array.isArray(pData.semantic_map.edges) ? pData.semantic_map.edges : []
-        });
-      } else {
-        setSemanticData(null);
+      // Load historical semantic maps
+      try {
+        const maps = await fetchProjectSemanticMaps(id);
+        setHistoricalSemanticMaps(maps);
+        if (pData.semantic_map && typeof pData.semantic_map === 'object' && Object.keys(pData.semantic_map).length > 0) {
+          setSemanticData({
+            nodes: Array.isArray(pData.semantic_map.nodes) ? pData.semantic_map.nodes : [],
+            edges: Array.isArray(pData.semantic_map.edges) ? pData.semantic_map.edges : []
+          });
+          setSelectedSemanticMapId("latest");
+        } else if (maps && maps.length > 0) {
+          const latestMap = maps[0];
+          setSemanticData({
+            nodes: Array.isArray(latestMap.semantic_map.nodes) ? latestMap.semantic_map.nodes : [],
+            edges: Array.isArray(latestMap.semantic_map.edges) ? latestMap.semantic_map.edges : []
+          });
+          setSelectedSemanticMapId(latestMap.id);
+        } else {
+          setSemanticData(null);
+          setSelectedSemanticMapId("");
+        }
+      } catch (mapErr) {
+        console.error("Failed to load historical semantic maps:", mapErr);
+        // Fallback to loaded semantic map if it exists
+        if (pData.semantic_map && typeof pData.semantic_map === 'object' && Object.keys(pData.semantic_map).length > 0) {
+          setSemanticData({
+            nodes: Array.isArray(pData.semantic_map.nodes) ? pData.semantic_map.nodes : [],
+            edges: Array.isArray(pData.semantic_map.edges) ? pData.semantic_map.edges : []
+          });
+          setSelectedSemanticMapId("latest");
+        } else {
+          setSemanticData(null);
+          setSelectedSemanticMapId("");
+        }
       }
 
       // Load historical summaries
@@ -960,6 +1104,63 @@ export default function ProjectPage() {
         </CardContent>
       </Card>
 
+      {/* 2nd row: Historic semantic map list dropdown */}
+      {((historicalSemanticMaps && historicalSemanticMaps.length > 0) || 
+        (project?.semantic_map && typeof project.semantic_map === 'object' && Object.keys(project.semantic_map).length > 0)) && (() => {
+          const uniqueHistoricalMaps = historicalSemanticMaps.filter(
+            (map) => !project?.semantic_map || (project.semantic_map as any).id !== map.id
+          );
+          const totalDocs = uniqueHistoricalMaps.length + (project?.semantic_map && Object.keys(project.semantic_map).length > 0 ? 1 : 0);
+          return (
+            <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <CardContent className="p-6">
+                <div className="flex flex-wrap items-center justify-between gap-6">
+                  <div className="flex items-center gap-4 flex-1 min-w-[280px]">
+                    <div className="flex flex-col gap-1.5 w-full">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
+                        Select Semantic Map From History ({totalDocs})
+                      </span>
+                      <select
+                        value={selectedSemanticMapId}
+                        onChange={(e) => handleSelectSemanticMap(e.target.value)}
+                        className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/10 cursor-pointer w-full shadow-sm transition-all"
+                      >
+                        {project?.semantic_map && typeof project.semantic_map === 'object' && Object.keys(project.semantic_map).length > 0 && (
+                          <option value="latest">
+                            [Active Map] Current Live Semantic Map ({Array.isArray((project.semantic_map as any).nodes) ? (project.semantic_map as any).nodes.length : 0} nodes){(project?.semantic_map as any)?.model_id ? ` • ${getSimplifiedModelName((project.semantic_map as any).model_id)}` : ""} - {((project.semantic_map as any).created_at ? new Date((project.semantic_map as any).created_at) : new Date(project.created_at)).toLocaleString()}
+                          </option>
+                        )}
+                        {uniqueHistoricalMaps.map((map) => {
+                          const nCount = map.nodes_count || (Array.isArray(map.semantic_map?.nodes) ? map.semantic_map.nodes.length : 0);
+                          const eCount = map.edges_count || (Array.isArray(map.semantic_map?.edges) ? map.semantic_map.edges.length : 0);
+                          const mId = map.model_id || map.semantic_map?.model_id;
+                          const modelStr = mId ? ` • ${getSimplifiedModelName(mId)}` : "";
+                          return (
+                            <option key={map.id} value={map.id}>
+                              Historic Map ({nCount} nodes, {eCount} edges){modelStr} - {new Date(map.created_at).toLocaleString()}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  </div>
+
+                  {selectedSemanticMapId && (
+                    <Button
+                      onClick={() => handleDeleteSemanticMap(selectedSemanticMapId)}
+                      variant="outline"
+                      className="h-10 px-6 text-red-500 hover:text-red-600 hover:bg-red-50/50 border-red-100 rounded-xl text-xs font-bold uppercase tracking-widest gap-2 transition-all md:self-end"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete This Record
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })()}
+
       {isAnalyzingSemantic ? (
         <div className="py-32 flex flex-col items-center gap-6 text-center">
           <div className="relative">
@@ -1091,15 +1292,15 @@ export default function ProjectPage() {
   );
 
   const renderSummaryTab = () => (
-    <div className="space-y-8 pb-20 animate-in fade-in slide-in-from-bottom-2 duration-500 w-full">
+    <div className="space-y-8 pb-20 animate-in fade-in slide-in-from-bottom-2 duration-500 w-full min-w-0 max-w-full">
       {/* Top row with Word Count field & Generate Summary button */}
-      <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm">
+      <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm w-full min-w-0">
         <CardContent className="p-6">
-          <div className="flex flex-wrap items-center justify-between gap-6">
-            <div className="flex items-center gap-4">
-              <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+            <div className="flex items-center gap-4 min-w-0">
+              <div className="flex flex-col gap-1.5 min-w-0">
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Word Count Target</span>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <select
                     value={wordCountOption}
                     onChange={(e) => setWordCountOption(e.target.value)}
@@ -1133,7 +1334,7 @@ export default function ProjectPage() {
             <Button 
               onClick={handleGenerateSummary}
               disabled={isGeneratingSummary || links.length === 0}
-              className="px-8 h-12 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/90 transition-all shadow-xl shadow-primary/10 gap-2 min-w-[200px]"
+              className="px-8 h-12 bg-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/90 transition-all shadow-xl shadow-primary/10 gap-2 min-w-[200px] shrink-0"
             >
               {isGeneratingSummary ? (
                 <>
@@ -1153,24 +1354,28 @@ export default function ProjectPage() {
 
       {/* 2nd row: Historic records selection dropdown */}
       {historicalSummaries.length > 0 && (
-        <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+        <Card className="rounded-3xl border-slate-200 shadow-sm overflow-hidden bg-white/80 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-2 duration-300 w-full min-w-0">
           <CardContent className="p-6">
-            <div className="flex flex-wrap items-center justify-between gap-6">
-              <div className="flex items-center gap-4 flex-1 min-w-[280px]">
-                <div className="flex flex-col gap-1.5 w-full">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+              <div className="flex items-center gap-4 flex-1 min-w-0">
+                <div className="flex flex-col gap-1.5 w-full min-w-0">
                   <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">
                     Select Compiled Briefing From History ({historicalSummaries.length})
                   </span>
                   <select
                     value={selectedSummaryId}
                     onChange={(e) => handleSelectSummary(e.target.value)}
-                    className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/10 cursor-pointer w-full shadow-sm transition-all"
+                    className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/10 cursor-pointer w-full shadow-sm transition-all truncate"
                   >
-                    {historicalSummaries.map((sum) => (
-                      <option key={sum.id} value={sum.id}>
-                        [{new Date(sum.created_at).toLocaleDateString()}] {sum.heading.slice(0, 80)}{sum.heading.length > 80 ? "..." : ""} ({sum.word_count} words)
-                      </option>
-                    ))}
+                    {historicalSummaries.map((sum) => {
+                      const mName = sum.model_id ? getSimplifiedModelName(sum.model_id) : "";
+                      const modelStr = mName ? ` • ${mName}` : "";
+                      return (
+                        <option key={sum.id} value={sum.id}>
+                          [{new Date(sum.created_at).toLocaleString()}{modelStr}] {sum.heading.slice(0, 80)}{sum.heading.length > 80 ? "..." : ""} ({sum.word_count} words)
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>
@@ -1179,7 +1384,7 @@ export default function ProjectPage() {
                 <Button
                   onClick={() => handleDeleteSummary(selectedSummaryId)}
                   variant="outline"
-                  className="h-10 px-6 text-red-500 hover:text-red-600 hover:bg-red-50/50 border-red-100 rounded-xl text-xs font-bold uppercase tracking-widest gap-2 transition-all md:self-end"
+                  className="h-10 px-6 text-red-500 hover:text-red-600 hover:bg-red-50/50 border-red-100 rounded-xl text-xs font-bold uppercase tracking-widest gap-2 transition-all sm:self-end shrink-0"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Delete This Record
@@ -1192,7 +1397,7 @@ export default function ProjectPage() {
 
       {/* Summary output content block */}
       {isGeneratingSummary ? (
-        <div className="py-24 flex flex-col items-center justify-center bg-white rounded-3xl border border-slate-100 shadow-sm">
+        <div className="py-24 flex flex-col items-center justify-center bg-white rounded-3xl border border-slate-100 shadow-sm w-full">
           <div className="relative mb-6">
             <Activity className="w-12 h-12 text-blue-500 animate-pulse" />
             <BrainCircuit className="w-6 h-6 text-primary absolute inset-0 m-auto animate-spin" />
@@ -1203,8 +1408,8 @@ export default function ProjectPage() {
           </p>
         </div>
       ) : summaryData ? (
-        <Card className="rounded-3xl border-slate-200 shadow-xl overflow-hidden bg-white w-full">
-          <CardHeader className="p-8 border-b border-slate-100 bg-slate-50/50">
+        <Card className="rounded-3xl border-slate-200 shadow-xl overflow-hidden bg-white w-full min-w-0 max-w-full">
+          <CardHeader className="p-8 border-b border-slate-100 bg-slate-50/50 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
               <Badge variant="secondary" className="bg-primary/5 text-primary font-bold tracking-widest uppercase text-[10px] px-3 py-1">
                 EXECUTIVE INTELLIGENCE BRIEFING
@@ -1213,17 +1418,17 @@ export default function ProjectPage() {
                 Generated {new Date(summaryData.generatedAt).toLocaleString()} • Target: {summaryData.wordCountTarget} words
               </span>
             </div>
-            <CardTitle className="text-3xl font-black text-slate-900 tracking-tight leading-tight mt-3">
+            <CardTitle className="text-3xl font-black text-slate-900 tracking-tight leading-tight mt-3 break-words">
               {summaryData.heading}
             </CardTitle>
           </CardHeader>
           
-          <CardContent className="p-8 md:p-12 space-y-6 text-slate-700 text-sm md:text-base leading-relaxed font-sans max-w-none prose prose-slate">
+          <CardContent className="p-8 md:p-12 space-y-6 text-slate-700 text-sm md:text-base leading-relaxed font-sans max-w-full prose prose-slate break-words min-w-0">
             {summaryData.body.split('\n\n').map((paragraph, index) => {
               if (!paragraph.trim()) return null;
               
               return (
-                <p key={index} className="whitespace-pre-wrap">
+                <p key={index} className="whitespace-pre-wrap break-all sm:break-words [word-break:break-word] max-w-full">
                   {paragraph.split(/(\*\*.*?\*\*)/g).map((part, pIdx) => {
                     if (part.startsWith('**') && part.endsWith('**')) {
                       return <strong key={pIdx} className="font-extrabold text-slate-900">{part.slice(2, -2)}</strong>;
@@ -1236,7 +1441,7 @@ export default function ProjectPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="py-32 flex flex-col items-center text-center bg-white rounded-3xl border border-dashed border-slate-200">
+        <div className="py-32 flex flex-col items-center text-center bg-white rounded-3xl border border-dashed border-slate-200 w-full">
           <div className="w-20 h-20 bg-white border border-dashed border-slate-200 rounded-full flex items-center justify-center mb-6 shadow-sm">
             <FileText className="w-8 h-8 text-slate-300 animate-pulse" />
           </div>

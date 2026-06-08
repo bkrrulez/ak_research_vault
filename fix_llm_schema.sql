@@ -78,3 +78,25 @@ CREATE POLICY "System client access to links" ON links
 CREATE POLICY "System client access to project_summaries" ON project_summaries 
   FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+
+-- G. TABLE AND POLICIES FOR project_semantic_maps (Historical records)
+CREATE TABLE IF NOT EXISTS project_semantic_maps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id BIGINT REFERENCES projects(id) ON DELETE CASCADE,
+  semantic_map JSONB NOT NULL,
+  nodes_count INT NOT NULL,
+  edges_count INT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_semantic_maps_project_id ON project_semantic_maps(project_id);
+
+ALTER TABLE project_semantic_maps ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public access to project_semantic_maps" ON project_semantic_maps;
+DROP POLICY IF EXISTS "System client access to project_semantic_maps" ON project_semantic_maps;
+
+CREATE POLICY "System client access to project_semantic_maps" ON project_semantic_maps 
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+

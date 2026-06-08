@@ -253,13 +253,39 @@ export async function analyzeText(text: string, context?: string): Promise<{ ana
   return handleResponse(response, "analyze text");
 }
 
-export async function generateSemanticMap(items: any[], query: string, projectId?: string): Promise<{ nodes: any[], edges: any[] }> {
+export async function generateSemanticMap(items: any[], query: string, projectId?: string): Promise<{ id?: string; nodes: any[], edges: any[], created_at?: string }> {
   const response = await fetchWithTimeout("/api/llm/semantic-map", {
     method: "POST",
     headers: getAuthHeaders(),
     body: JSON.stringify({ items, query, projectId }),
   });
   return handleResponse(response, "generate semantic map");
+}
+
+export interface ProjectSemanticMap {
+  id: string;
+  project_id: string;
+  semantic_map: { nodes: any[]; edges: any[]; model_id?: string };
+  nodes_count: number;
+  edges_count: number;
+  created_at: string;
+  model_id?: string;
+}
+
+export async function fetchProjectSemanticMaps(projectId: string): Promise<ProjectSemanticMap[]> {
+  const response = await fetchWithTimeout(`/api/projects/${projectId}/semantic-maps`, {
+    method: "GET",
+    headers: getAuthHeaders(),
+  });
+  return handleResponse(response, "fetch project semantic maps");
+}
+
+export async function deleteProjectSemanticMap(projectId: string, mapId: string): Promise<{ success: boolean }> {
+  const response = await fetchWithTimeout(`/api/projects/${projectId}/semantic-maps/${mapId}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+  return handleResponse(response, "delete project semantic map");
 }
 
 export interface ProjectSummary {
@@ -270,6 +296,7 @@ export interface ProjectSummary {
   word_count: number;
   raw_text?: string;
   created_at: string;
+  model_id?: string;
 }
 
 export async function fetchProjectSummaries(projectId: string): Promise<ProjectSummary[]> {

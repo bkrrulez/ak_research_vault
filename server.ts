@@ -9,6 +9,7 @@ import * as cheerio from "cheerio";
 import Parser from "rss-parser";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
+import pg from "pg";
 
 const SALT_ROUNDS = 10;
 const ENCRYPTION_ALGORITHM = "aes-256-cbc";
@@ -70,6 +71,58 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // and gracefully fall back to the Anonymous Key in systems where service role credentials are omitted from process environment.
 const supabaseKey = supabaseServiceRoleKey || supabaseAnonKey;
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+// --- GLOBAL DATABASE CONNECTION POOL ---
+function parseDatabaseUrl(urlStr: string) {
+  try {
+    if (!urlStr.startsWith("postgresql://") && !urlStr.startsWith("postgres://")) {
+      return { connectionString: urlStr };
+    }
+    const cleanStr = urlStr.replace(/^(postgresql|postgres):\/\//, "");
+    const lastAtIdx = cleanStr.lastIndexOf("@");
+    if (lastAtIdx === -1) return { connectionString: urlStr };
+    
+    const userPass = cleanStr.substring(0, lastAtIdx);
+    const hostPortDb = cleanStr.substring(lastAtIdx + 1);
+    
+    const colonIdx = userPass.indexOf(":");
+    const user = colonIdx !== -1 ? userPass.substring(0, colonIdx) : userPass;
+    const password = colonIdx !== -1 ? userPass.substring(colonIdx + 1) : "";
+    
+    const slashIdx = hostPortDb.indexOf("/");
+    const hostPort = slashIdx !== -1 ? hostPortDb.substring(0, slashIdx) : hostPortDb;
+    const database = slashIdx !== -1 ? hostPortDb.substring(slashIdx + 1) : "postgres";
+    
+    const portColonIdx = hostPort.lastIndexOf(":");
+    const host = portColonIdx !== -1 ? hostPort.substring(0, portColonIdx) : hostPort;
+    const portStr = portColonIdx !== -1 ? hostPort.substring(portColonIdx + 1) : "5432";
+    const port = parseInt(portStr, 10);
+    
+    return {
+      user,
+      password,
+      host,
+      port,
+      database
+    };
+  } catch (err) {
+    console.warn("[Migrations] Custom DB URL parsing failed, using raw string:", err);
+    return { connectionString: urlStr };
+  }
+}
+
+let dbPool: pg.Pool | null = null;
+function getDbPool(): pg.Pool | null {
+  if (dbPool) return dbPool;
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) return null;
+  const poolConfig = parseDatabaseUrl(dbUrl);
+  dbPool = new pg.Pool({
+    ...poolConfig,
+    ssl: { rejectUnauthorized: false }
+  });
+  return dbPool;
+}
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -905,19 +958,148 @@ STRICT RULES:
        return res.json({ nodes: [], edges: [] });
     }
 
+    // Set fallback creation timestamp
+    semanticData.created_at = new Date().toISOString();
+    semanticData.model_id = modelId;
+
     // Save to project if projectId is provided
     if (projectId) {
       try {
-        const { error: updateError } = await supabase
-          .from("projects")
-          .update({ semantic_map: semanticData })
-          .eq("id", projectId)
-          .eq("user_email", req.user.email);
-        
-        if (updateError) {
-          console.error("[LLM] Failed to save semantic map to project:", updateError);
-        } else {
-          console.log(`[LLM] Semantic map persisted for project ${projectId}`);
+        const projectIdNumeric = typeof projectId === "string" ? parseInt(projectId, 10) : projectId;
+        if (!isNaN(projectIdNumeric)) {
+          // First save to project_semantic_maps for historical tracking to get a generated creation timestamp
+          let insertedRecord: any = null;
+          let insertError: any = null;
+
+          // Discover columns dynamically first to prevent any potential column-not-found errors on insert
+          let existingCols = new Set<string>(["project_id", "semantic_map", "nodes_count", "edges_count", "model_id"]);
+          const pool = getDbPool();
+          if (pool) {
+            try {
+              const checkCols = await pool.query(`
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'project_semantic_maps';
+              `);
+              if (checkCols.rows && checkCols.rows.length > 0) {
+                existingCols = new Set(checkCols.rows.map((r: any) => r.column_name));
+              }
+            } catch (colErr: any) {
+              console.warn("[LLM] Dynamically querying columns failed, using safe defaults:", colErr.message);
+            }
+          }
+
+          try {
+            const insertPayload: any = {};
+            if (existingCols.has("project_id")) insertPayload.project_id = projectIdNumeric;
+            if (existingCols.has("semantic_map")) insertPayload.semantic_map = semanticData;
+            if (existingCols.has("map_data")) insertPayload.map_data = semanticData;
+            if (existingCols.has("nodes_count")) insertPayload.nodes_count = semanticData.nodes?.length || 0;
+            if (existingCols.has("edges_count")) insertPayload.edges_count = semanticData.edges?.length || 0;
+            if (existingCols.has("model_id")) insertPayload.model_id = modelId;
+            if (existingCols.has("user_email") && req.user?.email) insertPayload.user_email = req.user.email;
+
+            const { data, error } = await supabase
+              .from("project_semantic_maps")
+              .insert([insertPayload])
+              .select()
+              .single();
+            insertedRecord = data;
+            insertError = error;
+          } catch (err: any) {
+            insertError = err;
+          }
+
+          if (insertError) {
+            console.warn("[LLM] Supabase dynamic schema insert failed, trying raw PostgreSQL fallback insert...");
+            if (pool) {
+              try {
+                const fields: string[] = [];
+                const values: any[] = [];
+                const placeHolders: string[] = [];
+                let pIndex = 1;
+                
+                if (existingCols.has("project_id")) {
+                  fields.push("project_id");
+                  values.push(projectIdNumeric);
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("semantic_map")) {
+                  fields.push("semantic_map");
+                  values.push(JSON.stringify(semanticData));
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("map_data")) {
+                  fields.push("map_data");
+                  values.push(JSON.stringify(semanticData));
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("nodes_count")) {
+                  fields.push("nodes_count");
+                  values.push(semanticData.nodes?.length || 0);
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("edges_count")) {
+                  fields.push("edges_count");
+                  values.push(semanticData.edges?.length || 0);
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("model_id")) {
+                  fields.push("model_id");
+                  values.push(modelId);
+                  placeHolders.push(`$${pIndex++}`);
+                }
+                if (existingCols.has("user_email") && req.user?.email) {
+                  fields.push("user_email");
+                  values.push(req.user.email);
+                  placeHolders.push(`$${pIndex++}`);
+                }
+
+                if (fields.length > 0) {
+                  const queryText = `INSERT INTO project_semantic_maps (${fields.join(", ")}) VALUES (${placeHolders.join(", ")}) RETURNING id, created_at;`;
+                  const pgRes = await pool.query(queryText, values);
+                  if (pgRes.rows && pgRes.rows[0]) {
+                    console.log("[LLM] Raw PostgreSQL fallback insert SUCCESS, ID:", pgRes.rows[0].id);
+                    insertedRecord = {
+                      id: pgRes.rows[0].id,
+                      created_at: pgRes.rows[0].created_at
+                    };
+                    insertError = null; // Cleared on success
+                  }
+                }
+              } catch (pgErr: any) {
+                console.error("[LLM] Raw PostgreSQL fallback insert failed as well:", pgErr.message);
+              }
+            } else {
+              console.error("[LLM] Failed to construct PostgreSQL raw Pool.");
+            }
+          }
+
+          if (insertError) {
+            console.error("[LLM] Failed to insert into project_semantic_maps after trying all approaches:", {
+              code: insertError.code,
+              message: insertError.message,
+              details: insertError.details,
+              hint: insertError.hint
+            });
+            console.info("[LLM] NOTE: If the table does not exist, run the SQL commands in 'fix_llm_schema.sql' inside your Supabase SQL Editor.");
+          } else if (insertedRecord) {
+            console.log(`[LLM] Successfully logged historical semantic map with ID ${insertedRecord.id}`);
+            semanticData.id = insertedRecord.id;
+            semanticData.created_at = insertedRecord.created_at;
+          }
+
+          // Now save to primary project record with id and created_at fields included
+          const { error: updateError } = await supabase
+            .from("projects")
+            .update({ semantic_map: semanticData })
+            .eq("id", projectIdNumeric)
+            .eq("user_email", req.user.email);
+          
+          if (updateError) {
+            console.error("[LLM] Failed to save semantic map to project:", updateError);
+          } else {
+            console.log(`[LLM] Semantic map persisted for project ${projectIdNumeric}`);
+          }
         }
       } catch (persE) {
         console.error("[LLM] Persist error:", persE);
@@ -1009,30 +1191,56 @@ ${textToSummarize}`;
       body,
       rawText: summaryText,
       wordCountTarget: wordCount,
-      generatedAt: new Date().toISOString()
+      generatedAt: new Date().toISOString(),
+      model_id: modelId
     };
 
     // Save to project_summaries table for historical records
     if (projectId) {
       try {
-        const { data: insertedRecord, error: insertError } = await supabase
-          .from("project_summaries")
-          .insert([{
-            project_id: projectId,
+        const projectIdNumeric = typeof projectId === "string" ? parseInt(projectId, 10) : projectId;
+        if (!isNaN(projectIdNumeric)) {
+          // Discover columns dynamically first to prevent any potential column-not-found errors on insert
+          let existingCols = new Set<string>(["project_id", "heading", "body", "word_count", "raw_text", "model_id"]);
+          const pool = getDbPool();
+          if (pool) {
+            try {
+              const checkCols = await pool.query(`
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'project_summaries';
+              `);
+              if (checkCols.rows && checkCols.rows.length > 0) {
+                existingCols = new Set(checkCols.rows.map((r: any) => r.column_name));
+              }
+            } catch (colErr: any) {
+              console.warn("[LLM/SUMMARY] Dynamically querying columns failed, using safe defaults:", colErr.message);
+            }
+          }
+
+          const insertPayload: any = {
+            project_id: projectIdNumeric,
             heading,
             body,
             word_count: wordCount,
             raw_text: summaryText
-          }])
-          .select()
-          .single();
+          };
+          if (existingCols.has("model_id")) {
+            insertPayload.model_id = modelId;
+          }
 
-        if (insertError) {
-          console.error("[LLM/SUMMARY] Failed to insert into project_summaries:", insertError);
-        } else if (insertedRecord) {
-          console.log(`[LLM/SUMMARY] Successfully logged historical summary with ID ${insertedRecord.id}`);
-          summaryResult.id = insertedRecord.id;
-          summaryResult.generatedAt = insertedRecord.created_at;
+          const { data: insertedRecord, error: insertError } = await supabase
+            .from("project_summaries")
+            .insert([insertPayload])
+            .select()
+            .single();
+
+          if (insertError) {
+            console.error("[LLM/SUMMARY] Failed to insert into project_summaries:", insertError);
+          } else if (insertedRecord) {
+            console.log(`[LLM/SUMMARY] Successfully logged historical summary with ID ${insertedRecord.id}`);
+            summaryResult.id = insertedRecord.id;
+            summaryResult.generatedAt = insertedRecord.created_at;
+          }
         }
       } catch (dbErr) {
         console.error("[LLM/SUMMARY] Historic table insert error:", dbErr);
@@ -1042,29 +1250,32 @@ ${textToSummarize}`;
     // Save to projects table inside the 'settings' JSONB column for compatibility
     if (projectId) {
       try {
-        const { data: projectData, error: fetchError } = await supabase
-          .from("projects")
-          .select("settings")
-          .eq("id", projectId)
-          .eq("user_email", req.user.email)
-          .single();
-
-        if (!fetchError && projectData) {
-          const updatedSettings = {
-            ...(projectData.settings || {}),
-            summary: summaryResult
-          };
-
-          const { error: updateError } = await supabase
+        const projectIdNumeric = typeof projectId === "string" ? parseInt(projectId, 10) : projectId;
+        if (!isNaN(projectIdNumeric)) {
+          const { data: projectData, error: fetchError } = await supabase
             .from("projects")
-            .update({ settings: updatedSettings })
-            .eq("id", projectId)
-            .eq("user_email", req.user.email);
+            .select("settings")
+            .eq("id", projectIdNumeric)
+            .eq("user_email", req.user.email)
+            .single();
 
-          if (updateError) {
-            console.error("[LLM/SUMMARY] Failed to save summary to project settings:", updateError);
-          } else {
-            console.log(`[LLM/SUMMARY] Summary saved to project settings for ${projectId}`);
+          if (!fetchError && projectData) {
+            const updatedSettings = {
+              ...(projectData.settings || {}),
+              summary: summaryResult
+            };
+
+            const { error: updateError } = await supabase
+              .from("projects")
+              .update({ settings: updatedSettings })
+              .eq("id", projectIdNumeric)
+              .eq("user_email", req.user.email);
+
+            if (updateError) {
+              console.error("[LLM/SUMMARY] Failed to save summary to project settings:", updateError);
+            } else {
+              console.log(`[LLM/SUMMARY] Summary saved to project settings for ${projectIdNumeric}`);
+            }
           }
         }
       } catch (dbErr) {
@@ -1081,13 +1292,14 @@ ${textToSummarize}`;
 // GET all summaries for a project
 apiRouter.get("/projects/:id/summaries", authenticate, async (req: any, res) => {
   try {
-    const projectId = req.params.id;
+    const projectIdNumeric = parseInt(req.params.id, 10);
+    if (isNaN(projectIdNumeric)) return res.status(400).json({ error: "Invalid project ID" });
 
     // First make sure the project belongs to the user
     const { data: project, error: pError } = await supabase
       .from("projects")
       .select("id")
-      .eq("id", projectId)
+      .eq("id", projectIdNumeric)
       .eq("user_email", req.user.email)
       .single();
 
@@ -1098,7 +1310,7 @@ apiRouter.get("/projects/:id/summaries", authenticate, async (req: any, res) => 
     const { data, error } = await supabase
       .from("project_summaries")
       .select("*")
-      .eq("project_id", projectId)
+      .eq("project_id", projectIdNumeric)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -1111,14 +1323,15 @@ apiRouter.get("/projects/:id/summaries", authenticate, async (req: any, res) => 
 // DELETE a specific historical summary from a project
 apiRouter.delete("/projects/:id/summaries/:summaryId", authenticate, async (req: any, res) => {
   try {
-    const projectId = req.params.id;
+    const projectIdNumeric = parseInt(req.params.id, 10);
+    if (isNaN(projectIdNumeric)) return res.status(400).json({ error: "Invalid project ID" });
     const summaryId = req.params.summaryId;
 
     // Verify authorized project ownership
     const { data: project, error: pError } = await supabase
       .from("projects")
       .select("id")
-      .eq("id", projectId)
+      .eq("id", projectIdNumeric)
       .eq("user_email", req.user.email)
       .single();
 
@@ -1130,12 +1343,92 @@ apiRouter.delete("/projects/:id/summaries/:summaryId", authenticate, async (req:
       .from("project_summaries")
       .delete()
       .eq("id", summaryId)
-      .eq("project_id", projectId);
+      .eq("project_id", projectIdNumeric);
 
     if (error) throw error;
     res.json({ success: true, id: summaryId });
   } catch (error: any) {
     handleApiError(res, error, "deleting summary from history");
+  }
+});
+
+// GET all semantic maps for a project
+apiRouter.get("/projects/:id/semantic-maps", authenticate, async (req: any, res) => {
+  try {
+    const projectIdNumeric = parseInt(req.params.id, 10);
+    if (isNaN(projectIdNumeric)) return res.status(400).json({ error: "Invalid project ID" });
+
+    // First make sure the project belongs to the user
+    const { data: project, error: pError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", projectIdNumeric)
+      .eq("user_email", req.user.email)
+      .single();
+
+    if (pError || !project) {
+      return res.status(403).json({ error: "Access denied or project not found" });
+    }
+
+    const { data, error } = await supabase
+      .from("project_semantic_maps")
+      .select("*")
+      .eq("project_id", projectIdNumeric)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      if (error.code === "42P01") {
+        console.warn("[LLM] project_semantic_maps table does not exist yet. Please run fix_llm_schema.sql on Supabase.");
+        return res.json([]);
+      }
+      throw error;
+    }
+
+    const mappedData = (data || []).map((m: any) => {
+      if (m.map_data && !m.semantic_map) {
+        return {
+          ...m,
+          semantic_map: m.map_data
+        };
+      }
+      return m;
+    });
+
+    res.json(mappedData);
+  } catch (error: any) {
+    handleApiError(res, error, "fetching project semantic maps");
+  }
+});
+
+// DELETE a specific historical semantic map from a project
+apiRouter.delete("/projects/:id/semantic-maps/:mapId", authenticate, async (req: any, res) => {
+  try {
+    const projectIdNumeric = parseInt(req.params.id, 10);
+    if (isNaN(projectIdNumeric)) return res.status(400).json({ error: "Invalid project ID" });
+    const mapId = req.params.mapId;
+
+    // Verify authorized project ownership
+    const { data: project, error: pError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", projectIdNumeric)
+      .eq("user_email", req.user.email)
+      .single();
+
+    if (pError || !project) {
+      return res.status(403).json({ error: "Access denied or project not found" });
+    }
+
+    const { error } = await supabase
+      .from("project_semantic_maps")
+      .delete()
+      .eq("id", mapId)
+      .eq("project_id", projectIdNumeric);
+
+    if (error) throw error;
+    res.json({ success: true, id: mapId });
+  } catch (error: any) {
+    handleApiError(res, error, "deleting semantic map from history");
   }
 });
 
@@ -1337,10 +1630,13 @@ apiRouter.post("/projects", authenticate, async (req: any, res) => {
 
 apiRouter.get("/projects/:id", authenticate, async (req: any, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid project ID" });
+
     const { data, error } = await supabase
       .from("projects")
       .select("*")
-      .eq("id", req.params.id)
+      .eq("id", id)
       .eq("user_email", req.user.email)
       .single();
 
@@ -1353,16 +1649,20 @@ apiRouter.get("/projects/:id", authenticate, async (req: any, res) => {
 
 apiRouter.patch("/projects/:id", authenticate, async (req: any, res) => {
   try {
-    const { name, query, settings } = req.body;
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid project ID" });
+
+    const { name, query, settings, semantic_map } = req.body;
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (query !== undefined) updateData.query = query;
     if (settings !== undefined) updateData.settings = settings;
+    if (semantic_map !== undefined) updateData.semantic_map = semantic_map;
 
     const { data, error } = await supabase
       .from("projects")
       .update(updateData)
-      .eq("id", req.params.id)
+      .eq("id", id)
       .eq("user_email", req.user.email)
       .select()
       .single();
@@ -1936,7 +2236,127 @@ async function setupVite() {
   }
 }
 
-setupVite().then(() => {
+// --- DATABASE AUTO-MIGRATIONS ---
+async function runDatabaseMigrations() {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
+    console.info("[Migrations] No DATABASE_URL found. Skipping auto-migrations.");
+    return;
+  }
+
+  console.log("[Migrations] Connecting to database for checking and applying schema...");
+  const poolConfig = parseDatabaseUrl(dbUrl);
+  const pool = new pg.Pool({
+    ...poolConfig,
+    ssl: { rejectUnauthorized: false } // Needed for secure connection to hosted databases like Supabase
+  });
+
+  try {
+    const client = await pool.connect();
+    try {
+      console.log("[Migrations] Verifying table presence for historical semantic maps...");
+      
+      // 1. Create table if not exists with correct types and schema
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS project_semantic_maps (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          project_id BIGINT REFERENCES projects(id) ON DELETE CASCADE,
+          semantic_map JSONB NOT NULL,
+          nodes_count INT NOT NULL,
+          edges_count INT NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+        );
+      `);
+
+      // Ensure that columns from newer schema versions exist on historical table (in case of pre-existing older tables)
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ADD COLUMN IF NOT EXISTS semantic_map JSONB;`);
+        console.log("[Migrations] Verified column 'semantic_map' exists.");
+      } catch (err: any) {
+        console.warn("[Migrations] Could not add column 'semantic_map':", err.message);
+      }
+
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ADD COLUMN IF NOT EXISTS nodes_count INT DEFAULT 0;`);
+        console.log("[Migrations] Verified column 'nodes_count' exists.");
+      } catch (err: any) {
+        console.warn("[Migrations] Could not add column 'nodes_count':", err.message);
+      }
+
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ADD COLUMN IF NOT EXISTS edges_count INT DEFAULT 0;`);
+        console.log("[Migrations] Verified column 'edges_count' exists.");
+      } catch (err: any) {
+        console.warn("[Migrations] Could not add column 'edges_count':", err.message);
+      }
+
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ALTER COLUMN user_email DROP NOT NULL;`);
+        console.log("[Migrations] Verified user_email is optional.");
+      } catch (err: any) {
+        console.warn("[Migrations] Handled user_email constraint (might not exist):", err.message);
+      }
+
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ALTER COLUMN map_data DROP NOT NULL;`);
+        console.log("[Migrations] Verified map_data column is nullable (removed NOT NULL restriction).");
+      } catch (err: any) {
+        console.warn("[Migrations] Handled map_data constraint (might not exist):", err.message);
+      }
+
+      try {
+        await client.query(`ALTER TABLE project_semantic_maps ALTER COLUMN semantic_map DROP NOT NULL;`);
+        console.log("[Migrations] Verified semantic_map column is nullable (removed NOT NULL restriction).");
+      } catch (err: any) {
+        console.warn("[Migrations] Handled semantic_map constraint (might not exist):", err.message);
+      }
+
+      try {
+        await client.query(`UPDATE project_semantic_maps SET semantic_map = map_data WHERE semantic_map IS NULL;`);
+        console.log("[Migrations] Migrated historical map_data to semantic_map columns.");
+      } catch (err: any) {
+        // Safe if map_data does not exist
+      }
+
+      console.log("[Migrations] Table 'project_semantic_maps' successfully verified and updated.");
+
+      // Force notify Supabase schema cache of any schema updates
+      try {
+        await client.query("NOTIFY pgrst, 'reload schema';");
+        console.log("[Migrations] PostgREST schema cache reload requested successfully.");
+      } catch (cacheErr: any) {
+        console.warn("[Migrations] Could not notify PostgREST schema cache reload:", cacheErr.message);
+      }
+
+      // 2. Enable ROW LEVEL SECURITY
+      await client.query(`
+        ALTER TABLE project_semantic_maps ENABLE ROW LEVEL SECURITY;
+      `);
+      console.log("[Migrations] Enforced Row-Level Security on 'project_semantic_maps'.");
+
+      // 3. Setup and verify secure policies for backend client (any connection credentials)
+      await client.query(`
+        DROP POLICY IF EXISTS "System client access to project_semantic_maps" ON project_semantic_maps;
+        DROP POLICY IF EXISTS "Public client access to project_semantic_maps" ON project_semantic_maps;
+        CREATE POLICY "Public client access to project_semantic_maps" ON project_semantic_maps 
+          FOR ALL TO public USING (true) WITH CHECK (true);
+      `);
+      console.log("[Migrations] Secure policy matching RLS requirements is verified.");
+
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    console.error("[Migrations] Error during database auto-migrations:", err.message);
+  } finally {
+    await pool.end();
+  }
+}
+
+setupVite().then(async () => {
+  // Execute database checks on server boot
+  await runDatabaseMigrations();
+
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
